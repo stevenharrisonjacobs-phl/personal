@@ -1,0 +1,13 @@
+.env
+.context/
+__pycache__/
+*.py[cod]
+.venv/
+
+# Google OAuth: never commit the client secret or per-account tokens.
+client_secret*.json
+client_secret*.bak
+.secrets/
+# Rotated/backup copies of the OAuth client secret.
+.secrets_client_prev.json
+*client_prev*.json
