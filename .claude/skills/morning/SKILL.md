@@ -24,7 +24,12 @@ scripts/gcal.py agenda --days 7 --json --limit 120                     # week of
 scripts/gmail.py search "category:primary is:unread" --days 7 --json --limit 30
 scripts/gmail.py search "is:starred" --days 45 --json --limit 15       # open loops
 scripts/imessages.py needs-reply --days 4 --json
+grep -rl "" projects/**/*.md 2>/dev/null                                # project tracker files
 ```
+
+Also read the project tracker (`projects/work/*.md`, `projects/personal/*.md`):
+each file's NEXT ACTION, open loops, and `last_touched:` frontmatter. This is the
+passive-grooming pass — surface anything stale (>14d) or cold (>30d).
 
 Notes:
 - Warnings on stderr like `skipping <account>` mean a stale token; keep going
@@ -67,7 +72,11 @@ Day-by-day (Mon 7/13 …), merged across all calendars. Tag each item
 [work] [personal] [kids] [family]. Note gaps/conflicts inline.
 
 ## Open loops
-Starred mail, unfinished threads, anything aging past a week.
+Starred mail, unfinished threads, anything aging past a week. **Plus the project
+tracker:** any project whose NEXT ACTION is unset, or whose loops/`last_touched`
+have gone stale (>14d 🟡) or cold (>30d 🔴) — name the project and its next
+action. Nudge: "want to `/groom` these?" Keep to the ones that actually need
+attention; don't list healthy projects.
 
 ## Suggested actions
 Numbered, concrete, ≤5 ("1. Text 1 to Penn Medicine to confirm Tue 9am").
