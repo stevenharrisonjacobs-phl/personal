@@ -9,81 +9,70 @@ last_touched: 2026-07-15
 
 # Snapfix  ·  work / client
 
-Plum Growth's **first client** — AI GTM for a hotel-ops SaaS. People & context:
-see [people-and-workstreams.md](../../docs/people-and-workstreams.md) (Brett
-Robbins CEO, Ciarian head of sales, Christian head of marketing). Codebase =
-`conductor/repos/snapfix` (GCP `snapfix-agents`).
+Plum Growth's **first client** — AI GTM for a hotel-ops SaaS. People: Brett
+Robbins (CEO), Ciaran (head of sales), Christian (head of marketing). See
+[people-and-workstreams.md](../../docs/people-and-workstreams.md). Codebase =
+`conductor/repos/snapfix` (GCP `snapfix-agents`). Slack = Plum Growth workspace.
 
-> Sub-projects below were reverse-engineered on 2026-07-15 from GitHub (PRs +
-> issues), Conductor worktrees, and `.context` specs — **not** from calls (Granola
-> holds no Snapfix meetings). NEXT actions cite live issue/PR numbers. Groom to
-> taste — some may merge, and the client-relationship workstream is missing (no
-> data source for it yet).
+> Three real workstreams (per Steve, 2026-07-15), grounded in Slack threads +
+> GitHub. The many GitHub issues/PRs fold in as loops under the right workstream.
 
 ## FOCUS
-> **/ask GTM analytics** — land PR #390 (consult transcripts + emails), then stand up the offline eval harness (#379).
+> **Co-work** — get Brett's green light on the cross-team co-work experience (pinged 07-13), then finish the outbound workflow with his 2 outbound people.
 
 ## Sub-projects
 
-### /ask — GTM analytics · active  ⭐ front burner
-Natural-language sales/GTM analytics over verified call insights + canonical GTM
-views. 3 worktrees live on this. Shipped: #371 native /ask, #382 canonical views,
-#388 persist eval results, #387 eval-v1 findings.
-**NEXT** → Land PR #390 — `/ask` consults transcripts + emails for subjective deal questions.
-- [ ] #379 offline eval harness (nightly question→expected-answer set) (added 2026-07-15)
-- [ ] #381 targets/quota seed so `/ask` can answer "are we on track?" (added 2026-07-15)
+### 1. Co-work — the team's front door · active  ⭐
+**The core idea:** let Snapfix's team use Co-work as the single front door to
+everything we've built — accessible + customizable per person, not just Steve's
+setup. Stems from Brett's 07-01 Slack note sharing **Zander's** video (Obsidian
+"second brain", Digital Sales Rooms, live pricing tool, curated roadmaps,
+competitive calculators, auto-CRM-from-transcripts, MEDDPICC artifacts, voice
+email, Notion transcript miner). Steve's 07-09 reply: *"we've done the hard part
+— data layer, shared context layer, app layer are built."* This is the umbrella
+over the GTM-analytics (`/ask`) work **plus** porting existing capability into
+Co-work so the team self-serves. Zander's own blocker (and ours): making it
+self-serve across a team without the output getting worse.
+**NEXT** → Land the cross-team Co-work experience & get the right people from Brett.
+**WAITING** → 🔴 **Brett** — reply to 07-13 "hacked a cross-team co-work experience, still a priority?" (since 2026-07-13)
+- [ ] Port existing work into Co-work as the front door (outbound, signals, sales-ops tooling à la Zander's DSR/pricing/MEDDPICC) (added 2026-07-15)
+- [ ] `/ask` GTM analytics — land PR #390 (transcripts + emails); then offline eval harness #379, targets/quota seed #381 (added 2026-07-15)
+- [ ] Stand up 1–2 salespeople with their own AI sales-ops setup (Steve offered to fold into the design partnership) (added 2026-07-15)
+- [ ] Fix snapfix-door connector OAuth — #386 token expires mid-session / #369 persist state off Cloud Run; #370 rep login (added 2026-07-15)
+- [ ] Call-insights v1 quality re-audit + 90-day backfill (feeds `/ask`) (added 2026-07-15)
 
-### Fail-loud / system reliability · active
-Epics 1–6 (#358–#363): no silent failures, alerting-as-dependency, BQ↔PG sync,
-canonical eligibility predicate, entity identity, config/version enforcement.
-Worktrees: `system-issues-audit`, `lagos`.
-**NEXT** → Land PR #366 (fail-loud spine: sticky rc, alerting dependency, token hydration).
-- [ ] ⚠️ #383 CI + drift-gate silently dead since 2026-07-10 — GitHub Actions not creating runs (added 2026-07-15)
-- [ ] #364 / #365 capture OpenAI-embedding + web_search token usage for cost monitoring (added 2026-07-15)
+### 2. Outbound agent — working, reliable, engaged-with · active
+**Get the outbound agent genuinely working and reliable.** The single biggest
+challenge is **getting people to engage with the messages**. Current idea:
+**pipe generated messages into a Slack channel for review** (lower the friction
+to review/approve). Ciaran (07-01) asked for time with his AE/BDRs for feedback.
+**NEXT** → Build the "outbound messages → Slack channel for review" flow.
+- [ ] Get AE/BDR feedback session with Ciaran's team (he offered 07-01) (added 2026-07-15)
+- [ ] Reliability: #335/#336 outbound graph swallows mid-run LLM errors (reports success, persists nothing) (added 2026-07-15)
+- [ ] ⚠️ #383 CI + drift-gate silently dead since 07-10; #366 fail-loud spine PR (added 2026-07-15)
+- [ ] 🔴 #288 (priority:high) reverse ~19 bad job_change CRM writes in HubSpot (client data) (added 2026-07-15)
+- [ ] Signals feed outbound: #349 presentation layer, #269 lifecycle UI, #259 screening thumbs (added 2026-07-15)
 
-### Signals pipeline · active
-Detection → lifecycle → Signals Board/Map UI. Shipped a lot (#350–#355 board/map,
-owned-account signals). 
-**NEXT** → Decide next: #349 GTM presentation layer (lanes/routing) vs #269 signal-lifecycle UI (held branch).
-- [ ] #259 signal-card screening thumbs (open PR) (added 2026-07-15)
-- [ ] #347 broaden churn detection beyond Renewal-Lost (added 2026-07-15)
-- [ ] #296 expand ICP region to include Europe (currently UK + US-East) (added 2026-07-15)
-
-### job_change data quality · active
-Big sub-thread (tracking epic #293): role_change/employer_change split, pairwise
-resolver, identity gating, Lusha matching, CRM sync. Mostly follow-ups now
-(dated ~06-30, going stale).
-**NEXT** → 🔴 #288 (priority:high) reverse the ~19 bad job_change CRM writes in HubSpot.
-- [ ] #268 job_change → HubSpot CRM sync (held branch, review vs #232) (added 2026-07-15)
-- [ ] #283 warehouse MDM: merge multi-domain/name companies into golden entities (added 2026-07-15)
-
-### Outreach agents (plays + drafting) · active
-LangGraph outreach v4 → plays → drafting → review queue. Shipped: #327 advisory
-send recommendation, #313 v4.0, review-queue versioning.
-**NEXT** → Fix #335/#336 — outreach graph swallows mid-run LLM errors (reports success, persists nothing).
-- [ ] #314 retire/repoint stale v2 version registry to live v3 (4.0) (added 2026-07-15)
-- [ ] #267 Researcher v2.6 recent-signals momentum context (open PR) (added 2026-07-15)
-
-### Call insights / transcript intelligence · active
-Extraction quality + 90-day backfill that feeds `/ask`. Context:
-`call-insights-quality-reaudit.md`.
-**NEXT** → Finish the call-insights v1 quality re-audit + let the 90-day backfill complete.
-
-### Cowork + snapfix-door platform · active
-Rep-facing Claude seat: skills, context-doc library (#376), feedback→trace (#372),
-the snapfix-door MCP connector. Plugin v0.3.0.
-**NEXT** → Fix the door connector OAuth — #386 token expires mid-session / #369 persist OAuth state off Cloud Run.
-- [ ] #370 standardize rep login (dual Auth0 identity) (added 2026-07-15)
+### 3. ABM · active  🆕
+Christian + Ciaran have **started an ABM effort** and want Steve to plug in
+(Christian, 07-13: *"early in the effort… figuring out what we can/should do and
+then how to scale"*). Met with Ciaran 07-14. Christian shared **2 completed
+target docs** (Google Docs); the **full target list sits with Ciaran**.
+**NEXT** → Get the full ABM target list from Ciaran + review Christian's 2 target docs, then define how we plug in.
+**WAITING** → **Ciaran** — full list of ABM targets (Christian doesn't have it) (since 2026-07-14)
+- [ ] Pull in Christian's 2 shared target docs (Google Docs links in the DM) (added 2026-07-15)
+- [ ] Define how Plum Growth's tooling (signals/outbound) plugs into their ABM + how to scale it (added 2026-07-15)
 
 ## LOOSE
-Loops not tied to a sub-project.
-- [ ] #224 curated content pipeline (claims/announcements/POV) — held branch, decide revive or drop (added 2026-07-15)
+- [ ] #224 curated content pipeline (claims/announcements/POV) — held branch, revive or drop? (added 2026-07-15)
+- [ ] #283 warehouse MDM: golden company entities (foundational, cross-cutting) (added 2026-07-15)
 
 ## WAITING ON
-- _(nobody yet)_
+- **Brett** — co-work go-ahead (see workstream 1)
+- **Ciaran** — ABM target list (see workstream 3)
 
 ## LOG
-- 2026-07-15 — Reverse-engineered 7 active sub-projects from GitHub + Conductor + specs; set FOCUS to /ask.
+- 2026-07-15 — Restructured to Steve's 3 real workstreams (Co-work / Outbound / ABM), grounded in Slack (Brett Zander note 07-01, Christian ABM 07-13) + GitHub. Superseded the 7 code-derived sub-projects.
 
 ## ARCHIVE
-- [x] Stand up a cross-project tracker / "mandate" layer — **done 2026-07-15** (this tracker is it).
+- [x] Stand up a cross-project tracker / "mandate" layer — **done 2026-07-15**.

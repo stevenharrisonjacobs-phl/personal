@@ -8,7 +8,7 @@ Each project rolls up its **sub-projects** (the real units of work).
 ## Work
 | Project | Status | Focus | Sub-projects | Last touched | |
 |---|---|---|---|---|---|
-| **snapfix** | active | /ask: land PR #390 | 7 | 2026-07-15 | 🟢 |
+| **snapfix** | active | Co-work: Brett go-ahead | 3 (co-work, outbound, ABM) | 2026-07-15 | 🟢 |
 | **bobsled** | active (½-time) | _set_ | 0 | 2026-07-15 | 🟢 |
 | **fkt** | active | fill in what FKT is | 0 | 2026-07-15 | 🟢 |
 | **plum-growth** | active (ops) | _set_ | 0 | 2026-07-15 | 🟢 |
