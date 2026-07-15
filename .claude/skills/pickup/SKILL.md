@@ -23,30 +23,37 @@ Hub (always absolute — this skill runs from any repo):
 
 ## Step 2 — Read & present
 
-Read the chosen file. Present, tightly:
+Projects have **sub-projects**. Each file has a project-level `## FOCUS` (which
+sub-project matters now) and a `## Sub-projects` section where each sub-project
+carries its own `**NEXT** →` line + loops, plus a `## LOOSE` bucket for loops not
+tied to a sub-project.
+
+**Default (`/pickup snapfix`)** — show the tree collapsed, so Steven can steer:
 
 ```
 📌 {Project}  ·  last touched {N days ago}
 
-NEXT ACTION
-  → {the one line}
+FOCUS → {the project-level one-liner}
 
-OPEN LOOPS ({n})
-  • {loop}  ({age})
-  ...
-
-WAITING ON
-  • {who — since when}     ← omit section if empty
+Sub-projects
+  ▸ {sub} · {status}   NEXT → {one line}   ({n} loops)
+  ▸ {sub} · {status}   NEXT → {one line}
+LOOSE ({n})   ← show count only unless empty is notable
 ```
 
-Keep it under ~15 lines. Lead with NEXT ACTION — it's the payload.
+**Drill in (`/pickup snapfix outreach` or `/pickup snapfix:outreach`)** — expand
+just that sub-project: its NEXT, all its loops with ages, waiting-on.
+
+Keep the collapsed view under ~15 lines. Lead with FOCUS, then the sub-project
+NEXTs — that tree is the payload. If a project has no sub-projects yet, fall back
+to showing FOCUS + LOOSE loops and offer to create one.
 
 ## Step 3 — Micro-groom (only if warranted)
 
-- If `last_touched` > 14 days, add one line: _"⚠️ stale — is that NEXT ACTION
+- If `last_touched` > 14 days, add one line: _"⚠️ stale — is that FOCUS / NEXT
   still right?"_ and offer to update it.
-- If NEXT ACTION is still the placeholder `_(set this)_`, ask Steven for it and
-  write it in.
+- If FOCUS or a sub-project's NEXT is still a placeholder, ask Steven and write
+  it in.
 - If he tells you what he just did or what's next, update the file: refresh
   NEXT ACTION, check off / add loops, append a dated LOG line, bump
   `last_touched`, then commit (see below).

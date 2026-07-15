@@ -14,17 +14,29 @@ see [people-and-workstreams.md](../../docs/people-and-workstreams.md) (Brett
 Robbins CEO, Ciarian head of sales, Christian head of marketing). Codebase =
 `conductor/repos/snapfix` (GCP `snapfix-agents`).
 
-## NEXT ACTION
-> _(set this — the one next physical thing on Snapfix)_
+## FOCUS
+> _(which sub-project is the priority right now — one line)_
 
-## OPEN LOOPS
-- [ ] Stand up a cross-project tracker / "mandate" layer to manage ABM work — this file is step one (added 2026-07-15)
+## Sub-projects
+<!-- Shape of a sub-project. Create with: /park "snapfix/<sub>: <thought>"
+### Outreach agent v3 · active
+**NEXT** → ship the pricing-play prompt fix
+- [ ] example loop (added 2026-07-15)
+-->
+
+_(none seeded yet — tell me Snapfix's active workstreams and I'll add them, or
+`/park` will create one on the fly)_
+
+## LOOSE
+Loops not tied to a sub-project.
+
+_(none)_
 
 ## WAITING ON
 - _(nobody yet)_
 
 ## LOG
-- 2026-07-15 — Kicked off the personal cross-project tracker; Snapfix is the first work project wired in.
+- 2026-07-15 — Cross-project tracker stood up; restructured for sub-projects.
 
 ## ARCHIVE
-_(done / dropped loops land here — never deleted)_
+- [x] Stand up a cross-project tracker / "mandate" layer to manage ABM work — **done 2026-07-15** (this tracker is it).

@@ -11,15 +11,20 @@ last_touched: 2026-07-15
 
 > **⚠️ Stub — needs filling in.** FKT isn't in
 > [people-and-workstreams.md](../../docs/people-and-workstreams.md) yet, and I've
-> _guessed_ its repo is `your-online-space` — confirm or correct the `repos:`
-> line above so `/pickup` auto-detects it. Tell me who the client is (people,
-> what the engagement is, cadence) and I'll flesh this out + add them to the
-> people doc.
+> _guessed_ its repo is `your-online-space` — confirm/correct the `repos:` line so
+> `/pickup` auto-detects it. Tell me who the client is (people, scope, cadence)
+> and I'll flesh this out + add them to the people doc.
 
-## NEXT ACTION
-> _(set this)_
+## FOCUS
+> _(set once we know what FKT is)_
 
-## OPEN LOOPS
+## Sub-projects
+<!-- Create with: /park "fkt/<sub>: <thought>" -->
+
+_(none yet)_
+
+## LOOSE
+Loops not tied to a sub-project.
 - [ ] Fill in what FKT actually is — client, scope, contacts, repo (added 2026-07-15)
 
 ## WAITING ON

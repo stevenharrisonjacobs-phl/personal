@@ -11,26 +11,33 @@ working. Bias to capturing fast over asking questions.
 
 Hub: `/Users/stevenjacobs/conductor/repos/personal/projects`
 
-## Step 1 — Route it to a project
+## Step 1 — Route it to a project (and maybe a sub-project)
 
-1. If Steven named one (`/park bobsled: chase Josh on pricing`), use it.
-2. Else **auto-detect from cwd** via the `repos:` frontmatter match (same as
-   `/pickup`).
-3. Else **infer from the note's content** (a name/company in the text → its
-   project). If you infer, say which project you chose so he can redirect.
-4. Only if genuinely ambiguous, ask — one short question, offer 2–3 options.
+Projects contain **sub-projects**. Syntax: `/park <project>/<subproject>: <note>`
+(e.g. `/park snapfix/outreach: chase pricing prompt`).
+
+1. If Steven named `project/subproject`, use both. If the sub-project doesn't
+   exist yet, **create it** (new `### <subproject> · active` block with a NEXT
+   placeholder) — don't make him set it up first.
+2. If he named only a project (`/park bobsled: …`), route to that project; drop
+   the note in `## LOOSE` unless the text obviously belongs to an existing
+   sub-project (then use it and say so).
+3. Else **auto-detect the project from cwd** via the `repos:` frontmatter match.
+4. Else **infer from the note's content**. If you infer, say what you chose.
+5. Only if genuinely ambiguous, ask — one short question, 2–3 options.
 
 ## Step 2 — Write it
 
-Append to the project's **OPEN LOOPS** as an unchecked item with today's date:
+Append as an unchecked, dated item — under the sub-project's loops if one was
+resolved, else under `## LOOSE`:
 
 ```
 - [ ] {the thought, lightly cleaned up}  (added 2026-07-15)
 ```
 
-If it's clearly the single most important next thing, also offer to set it as
-NEXT ACTION. If it's a blocker on someone else, put it under WAITING ON instead.
-Bump `last_touched:` to today.
+If it's clearly the top priority, offer to set it as the sub-project's `NEXT` (or
+the project `FOCUS`). If it's blocked on someone, put it under WAITING ON. Bump
+`last_touched:` to today.
 
 ## Step 3 — Commit & confirm
 

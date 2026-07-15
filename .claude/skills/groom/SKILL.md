@@ -28,16 +28,19 @@ file(s).
 
 ## Step 2 — Build the proposal batch
 
-For each project, look for:
+Work at the **sub-project** grain. For each project and each sub-project, look
+for:
 - **Done loops** still listed → propose check-off + move to ARCHIVE.
+- **Finished sub-projects** (all loops done / shipped) → propose archiving the
+  whole sub-project block, not just its loops.
 - **Stale loops** (no movement ~21d+) → propose: still live, or archive? Ask;
   don't assume dead.
-- **Duplicate / overlapping loops** → propose a merge into one.
-- **Bloated NEXT ACTION** (multiple things, or vague) → propose tightening to one
+- **Duplicate / overlapping loops or sub-projects** → propose a merge into one.
+- **Bloated NEXT / FOCUS** (multiple things, or vague) → propose tightening to one
   concrete physical action.
-- **Cold project** (🔴 >30d) → propose a status change (`paused` / `winding-down`)
-  or confirm it's still active.
-- **Unset NEXT ACTION** → ask Steven for it.
+- **Cold sub-project or project** (🔴 >30d) → propose a status change (`paused` /
+  `winding-down`) or confirm it's still active.
+- **Unset FOCUS or sub-project NEXT** → ask Steven for it.
 
 Present as a tight numbered list, grouped by project, each line: what + why.
 

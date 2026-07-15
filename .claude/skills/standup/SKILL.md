@@ -13,34 +13,37 @@ Hub: `/Users/stevenjacobs/conductor/repos/personal/projects`
 
 ## Step 1 — Read everything
 
-Read every `projects/**/*.md`. For each, pull: name, status, NEXT ACTION, count
-of open loops, oldest open-loop age, and `last_touched`. Compute staleness from
-today (2026-07-15):
+Read every `projects/**/*.md`. For each project pull: name, status, `FOCUS`, its
+**sub-projects** (name + status + NEXT + loop count), LOOSE loop count, oldest
+open-loop age, and `last_touched`. Staleness from today (2026-07-15):
 - 🟢 fresh (<14d) · 🟡 stale (14–30d) · 🔴 cold (>30d).
 
 ## Step 2 — Present the board
 
-Group **Work** then **Personal**. One line per project:
+Group **Work** then **Personal**. One line per project (FOCUS + sub-project
+count); indent sub-projects only when they need attention or Steven asks for the
+expanded view.
 
 ```
 # Standup — {Weekday, Mon D}
 
 ## Work
-🟢 snapfix      → {next action}          · 2 loops · touched 1d ago
-🟡 bobsled      → {next action}          · 1 loop  · touched 18d ago
+🟢 snapfix     FOCUS → {focus}        · 3 sub · touched 1d ago
+🟡 bobsled     FOCUS → {focus}        · 2 sub · touched 18d ago
 ...
 
 ## Personal
 ...
 
 ## ⚠️ Needs attention
-- 🔴 {project} — cold {N}d, {n} open loops. Still live, or archive it?
-- {project} NEXT ACTION still unset.
+- 🔴 snapfix / {sub} — cold {N}d, {n} loops. Still live, or archive it?
+- {project} FOCUS unset, or {sub}'s NEXT unset.
 - {loop} open {N}d with no movement.
 ```
 
-The **Needs attention** block is the real value — call out every 🔴 cold
-project, every unset NEXT ACTION, and any loop aging past ~21 days.
+The **Needs attention** block is the real value — drill to the **sub-project**
+level here: call out every 🔴 cold sub-project, every unset FOCUS/NEXT, and any
+loop aging past ~21 days.
 
 ## Step 3 — Offer to act
 
