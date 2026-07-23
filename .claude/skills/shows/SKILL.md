@@ -20,6 +20,21 @@ python3 scripts/shows.py --json     # structured, if you need to reshape output
 Optional flags: `--radius <miles>` (default 40, covers Camden/Ardmore/Glenside),
 `--horizon <days>` (default 365).
 
+## Weekly email digest (automated)
+
+`scripts/shows_email.py` emails a weekly digest to Steven — **new** shows in a
+section up top, everything else still-upcoming below — via a dedicated Gmail App
+Password (SMTP), NOT the repo's send-disabled Gmail OAuth. It runs from the
+canonical repo (`~/conductor/repos/personal`) via a launchd job, Mondays 08:07.
+
+- Manage: `launchctl print gui/$(id -u)/com.stevenjacobs.philly-shows`
+- Run now: `launchctl kickstart -k gui/$(id -u)/com.stevenjacobs.philly-shows`
+- Logs: `.context/shows-email.log` / `.err.log` in the canonical repo
+- Reinstall: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stevenjacobs.philly-shows.plist`
+  (template committed at `scripts/com.stevenjacobs.philly-shows.plist`)
+- Needs `SHOWS_SMTP_*` in `.env` + the same `.env`/`.secrets` present at whatever
+  path launchd runs from.
+
 ## How it works (so you can explain / debug)
 
 1. **Taste graph** — `scripts/spotify.py` pulls ~100 artists via the Spotify Web
