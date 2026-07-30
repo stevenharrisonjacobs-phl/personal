@@ -143,8 +143,8 @@ The standing pattern:
 > commands from profile §1 → permitted read-only checks against the live system
 
 ```bash
-bash .claude/skills/orchestrate/scripts/orch-status.sh <program>
-bash .claude/skills/orchestrate/scripts/orch-scope-audit.sh <program>
+bash ~/.claude/skills/orchestrate/scripts/orch-status.sh <program>
+bash ~/.claude/skills/orchestrate/scripts/orch-scope-audit.sh <program>
 ```
 
 Reject incomplete lanes back into their loops. A handoff that claims a check
@@ -188,7 +188,7 @@ tips** by rerunning the original probes, not by reading the repair diffs.
 
 ## 8. Close out
 
-Write `CLOSEOUT.md` from the template. Amend it **in place** with a terminal
+Write `CLOSEOUT.md` from `templates/CLOSEOUT.md`. Amend it **in place** with a terminal
 marker (`# PROGRAM COMPLETE — <date>`) rather than replacing it. Tell each
 workspace to run `/archive`.
 

@@ -1,88 +1,88 @@
-<!-- Escalation template. Written by a LANE crossing an ownership boundary. This
-     workspace does NOT decide and does NOT build the thing below — it surfaces
-     a gap or a contradiction it hit while doing its own work and requests a
-     ruling from the owner. Do not edit the boundary you are escalating about
-     (a frozen contract, a shared aggregator, another lane's globs) while you
-     wait: continue on whatever is not blocked.
+# Escalation → decision
 
-     Write it to orchestration/<program>/escalations/ESCALATION-<date>-<topic>.md,
-     commit it on your branch, and tell the approver it is there.
+The rule that makes parallel lanes safe: **escalate, never edit, across an
+ownership boundary.** A lane that quietly fixes a shared contract has silently
+forked it for every other lane, and nobody finds out until integration.
 
-     Escalate only what is NOT answerable from the repo, read-only data, or a
-     test. State the evidence, recommend ONE direction, and give the smallest
-     concrete set of alternatives with their consequences. -->
+## When a lane escalates
 
-# ESCALATION → <decision owner>
+- It wants to change anything outside its owned globs — a frozen contract
+  (profile §6), a shared aggregator (profile §3), another lane's paths.
+- It wants an action on the irreversible list (profile §4) that its brief's §4
+  does not grant.
+- The business meaning, ground truth, or intended scope is genuinely ambiguous.
+- It is an acceptable-risk call.
+- It found something that **breaks** a frozen contract — the highest-priority
+  escalation, because every consumer lane is now building against a false premise.
 
-**From:** lane <NN> (`<branch>`, workspace `<name>`)
-**Date:** <YYYY-MM-DD>
-**Trigger:** <the concrete thing that happened — a real case id, a verified
-contradiction, a probe result. Not "while reading the spec I wondered".>
-**Decision owner:** <orchestrator | approver> (<what they own that you do not>).
-**Nothing to approve in this doc** — it requests a <routing | priority | scope>
-decision. <Delete this line if the escalation does ask for an approval token,
-and name the exact token instead.>
+**Do not escalate anything answerable from the repo, a read-only check, or a
+test.** Go find out. An escalation that a five-minute probe would have answered
+costs the orchestrator's attention and teaches lanes that escalating is cheaper
+than working.
 
----
+## Format
 
-<!-- STATUS BANNER — added IN PLACE by the lane when the ruling lands. Until
-     then this whole block stays deleted. Never open a second escalation on a
-     resolved question. -->
+> **State the evidence, recommend ONE direction, and give the smallest concrete
+> set of alternatives with their consequences.**
 
-## STATUS: RESOLVED — <one-line disposition> (<date>)
+Write it to `orchestration/<program>/escalations/ESCALATION-<date>-<topic>.md`
+from `templates/ESCALATION.md`, commit it on the lane's branch, and say it exists.
+Then **continue on whatever is not blocked** while you wait.
 
-<Decision owner> RATIFIED this. **This is not an open question — do NOT
-re-escalate it.** Full record: `<repo path to the DECISION file>`.
+Be explicit about disposition — what you have and have not done, and that you are
+ready to build whatever gets ratified, on the orchestrator's timeline. The best
+one in the source corpus ended: *"Escalating only. No contract edit, no new
+writer, no policy draft from this workspace."*
 
-Ruling in one paragraph: <the whole ruling, compressed, so a reader who never
-opens the decision file cannot act on the stale question. Name what was ruled
-IN, what was ruled OUT permanently vs deferred, the preconditions, and the
-build trigger if there is one.>
+## When the orchestrator decides
 
-**Directive to this lane from the ruling:** <build nothing / build exactly X /
-continue with Y>. All below is the original escalation, retained for the record.
+Write `orchestration/<program>/decisions/DECISION-<date>-<topic>.md` from
+`templates/DECISION.md`. Four things make a decision doc worth writing:
 
----
+**1. A ruling table first.** Question | Ruling. Someone should read six rows and
+stop.
 
-## The request
+**2. Reasoning that can overturn the framing.** Read the escalation's premise as
+a hypothesis, not a given. One real ruling rejected the escalation's own framing:
+the escalation called a field "the riskiest PII", and the decision corrected it —
+the fleet already wrote PII safely; that field was different because it was an
+**identity key** that entity resolution re-keyed on. Different problem, different
+answer. *"A bad phone number is a bad field; a bad email is a corrupted graph."*
 
-> <One-paragraph framing of the gap, in operational terms. What is now true,
-> what should be true, and why no existing governed path covers it.>
->
-> **Decide <where and when | which of these | whether at all>:**
->
-> 1. **<Dimension — e.g. authority + home>.** <Option A> or <option B>? <The
->    one sentence that makes these genuinely different, not stylistic.>
-> 2. **<Dimension — e.g. policy>.** <Question, with the sub-question that is
->    actually load-bearing made explicit.>
-> 3. **<Dimension — e.g. priority / build order>** relative to <the current
->    committed work>.
-> 4. **<Dimension — e.g. scope>.** <The minimal set, or the full set some
->    earlier spec named?>
+**3. A measurable trigger for anything deferred.** Not "later" — *"revisit when
+≥10 cases reach the terminal rung (today: 0)."* Deferral with a threshold is a
+decision; deferral without one is a hole someone re-escalates in a month.
 
-## Evidence and constraints the decider needs
+**4. An explicit directive to the lane**, including what **not** to build, so the
+next operator doesn't reopen a settled question.
 
-- **Do not touch <the boundary>.** <Why — the ratified property of the thing
-  that would be breached. Name the contract clause or invariant, and the
-  `orchestration/PROFILE.md` section that puts it out of a lane's reach.>
-- **What the live system actually shows:** <exact ids, counts, values you
-  verified read-only. Population size matters to a priority ruling.>
-- **The <signal | artifact | queue> already exists:** `<path or resource>` —
-  <so no new detection/plumbing is part of this decision>.
-- **The crux is <X>.** <State the sharpest version of the risk, and ask the
-  decider to rule on it explicitly rather than by omission.>
+## Land it where the repo already keeps decisions
 
-## Companion note — already handled, no decision needed
+If the repo has an existing decision record — a decisions log, an ADR directory,
+a table in a project doc — a decision that changes how the repo is built belongs
+in **both** places: the full reasoning in `orchestration/<program>/decisions/`,
+and a one-line entry in the repo's own log so someone who never reads the bus
+still finds it. The orchestrator writes that entry, not the lane.
 
-<Anything adjacent that a reader would reasonably assume is also open, but
-which is already satisfied. Say why, with evidence, so the decider does not
-spend a ruling on it.>
+## Close the loop on the escalation itself
 
-- <fact> — <evidence>. No manual step exists or is needed.
+Edit the escalation doc **in place** with a resolved banner and a
+**do-not-re-escalate** line pointing at the decision:
 
-## Lane disposition
+```
+## STATUS: RESOLVED — RATIFIED (<date>)
+This is not an open question — do NOT re-escalate it.
+Full record: orchestration/<program>/decisions/DECISION-<date>-<topic>.md
+```
 
-Escalating only. This workspace has **not** <edited the boundary / drafted the
-contract change / created the writer / changed the policy>. <What it HAS done and
-will continue doing while blocked.> Ready to build whatever is scoped and
-ratified, on the decision owner's timeline.
+Link by **committed repo path**, never by workspace path. A real escalation once
+pointed at `../../../<workspace>/docs/decisions/…`, which broke the moment that
+worktree was archived — that is why the bus is committed.
+
+Keep the original escalation text below the banner, retained for the record.
+
+## The lane confirms
+
+The lane reports directive-by-directive in its handoff — each ✅ / ⏸ / ⏳ with
+what is blocking. That closes the loop verifiably rather than assuming the
+decision landed.

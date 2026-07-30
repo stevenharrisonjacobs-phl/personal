@@ -27,7 +27,7 @@ profile wins.**
 create one:
 
 ```bash
-bash .claude/skills/orchestrate/scripts/orch-adopt.sh
+bash ~/.claude/skills/orchestrate/scripts/orch-adopt.sh
 ```
 
 That scaffolds `orchestration/PROFILE.md` from the template and probes the repo
@@ -157,13 +157,13 @@ never does.
 
 ## Run it
 
-**Adopt in a new repo** — `bash .claude/skills/orchestrate/scripts/orch-adopt.sh`,
+**Adopt in a new repo** — `bash ~/.claude/skills/orchestrate/scripts/orch-adopt.sh`,
 then fill `orchestration/PROFILE.md` **by measuring**, and commit it.
 
 **Start a program** — read `references/orchestrator.md`, then:
 
 ```bash
-bash .claude/skills/orchestrate/scripts/orch-init.sh <program-slug>
+bash ~/.claude/skills/orchestrate/scripts/orch-init.sh <program-slug>
 ```
 
 Fill `PLAN.md` and `lanes.json`, write each `lanes/NN-*.md` from
@@ -174,11 +174,11 @@ Fill `PLAN.md` and `lanes.json`, write each `lanes/NN-*.md` from
 **Check on it:**
 
 ```bash
-bash .claude/skills/orchestrate/scripts/orch-status.sh <program-slug>
-bash .claude/skills/orchestrate/scripts/orch-scope-audit.sh <program-slug> [lane-id]
+bash ~/.claude/skills/orchestrate/scripts/orch-status.sh <program-slug>
+bash ~/.claude/skills/orchestrate/scripts/orch-scope-audit.sh <program-slug> [lane-id]
 ```
 
-**Close out** — write `CLOSEOUT.md`, verify every lane branch is an ancestor of
+**Close out** — write `CLOSEOUT.md` from `templates/CLOSEOUT.md`, verify every lane branch is an ancestor of
 the default branch, then run `/archive` per workspace. **Archival is not a
 substitute for merging.** If the profile names a release step beyond merge, that
 is its own separately approved action — this skill never takes it.
