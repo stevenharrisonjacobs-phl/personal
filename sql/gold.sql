@@ -549,15 +549,42 @@ WITH pair_candidates AS (
       ELSE 0.25
     END AS flow_confidence
   FROM evidence AS e
+), account_identity AS (
+  SELECT
+    mask4,
+    COUNT(DISTINCT account_id) AS id_count,
+    ARRAY_AGG(account_id ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_account_id,
+    ARRAY_AGG(account_name ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_account_name,
+    ARRAY_AGG(institution ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_institution
+  FROM (
+    SELECT
+      RIGHT(REGEXP_REPLACE(COALESCE(account_number_masked, ''), r'[^0-9]+', ''), 4) AS mask4,
+      account_id,
+      account_name,
+      institution,
+      transaction_date
+    FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base`
+    WHERE COALESCE(account_id, '') != ''
+      AND RIGHT(REGEXP_REPLACE(COALESCE(account_number_masked, ''), r'[^0-9]+', ''), 4) != ''
+  )
+  GROUP BY mask4
 )
 SELECT
-  *,
+  c.* EXCEPT(account_id, account_name, institution),
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_account_id ELSE c.account_id END AS account_id,
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_account_name ELSE c.account_name END AS account_name,
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_institution ELSE c.institution END AS institution,
   CASE WHEN flow_type = 'expense' THEN -amount ELSE 0 END AS flow_expense_amount,
   CASE WHEN flow_type IN ('earned_income', 'investment_income') THEN amount ELSE 0 END AS flow_income_amount,
   CASE WHEN flow_type = 'refund_reimbursement' THEN amount ELSE 0 END AS flow_refund_amount,
   CASE WHEN flow_type IN ('internal_transfer', 'credit_card_payment') THEN ABS(amount) ELSE 0 END AS flow_transfer_amount,
   CASE WHEN flow_type = 'investment_activity' THEN ABS(amount) ELSE 0 END AS flow_investment_activity_amount
-FROM classified;
+FROM classified AS c
+LEFT JOIN account_identity AS ai
+  ON ai.mask4 = RIGHT(REGEXP_REPLACE(COALESCE(c.account_number_masked, ''), r'[^0-9]+', ''), 4);
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_review` AS
 SELECT
