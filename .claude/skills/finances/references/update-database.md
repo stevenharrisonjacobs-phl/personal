@@ -44,9 +44,8 @@ Surface, as review material only (never auto-apply):
 - `gold.transaction_flow_review` — flows that can't be safely resolved.
 - `gold.transaction_anomaly_review_queue` — session-reviewed anomalies.
 
-## 4. Only mutate with explicit confirmation
+## 4. Apply fixes as needed
 
-Refreshes, deploys, and classification changes touch durable state. Do not run
-`deploy.sh`, `validate.sh`, the `*-finance-onboarding.sh` scripts, `add-rule.sh`,
-`add-override.sh`, or any vendor/alias script unless the user explicitly asks.
-When a fix is warranted, propose the exact command and wait.
+When a fix is warranted — reconnect a feed, add a rule/override, or redeploy the
+model — just do it. `deploy.sh` is idempotent and everything downstream is
+rebuildable from source. Say what you ran so it's visible.
