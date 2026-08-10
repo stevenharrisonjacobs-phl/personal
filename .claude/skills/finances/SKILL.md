@@ -5,10 +5,10 @@ description: Entry point for the personal finance mirror. Prompts to either (1) 
 
 # /finances
 
-You are operating on **highly sensitive personal financial infrastructure**.
-Obey `AGENTS.md` at all times: Tiller and `tiller_raw` are read-only; query only
-through `./scripts/query.sh`; never apply a classification, rule, override, or
-deployment without explicit confirmation.
+This is a personal finance mirror. See `AGENTS.md` for data notes. Tiller and
+`tiller_raw` are the upstream source; everything downstream is derived and
+rebuildable, so apply fixes/deploys directly when warranted. Just don't commit
+secrets or row-level data to git (keep it in `.context/`).
 
 This skill is a **router**. Do the minimum here, then read the one procedure file
 for the branch the user picks — do not preload both.
