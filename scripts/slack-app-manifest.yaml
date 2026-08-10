@@ -1,0 +1,32 @@
+# Slack app manifest for scripts/slack.py (read-only personal access).
+#
+# Use it once per workspace (Bobsled, then Plum Growth):
+#   1. https://api.slack.com/apps  ->  "Create New App"  ->  "From a manifest"
+#   2. Pick the workspace, paste this YAML, click Next -> Create.
+#   3. "Install to Workspace" -> Allow.
+#   4. OAuth & Permissions -> copy the "User OAuth Token" (starts with xoxp-).
+#   5. scripts/slack.py add --name bobsled --token xoxp-...
+#      scripts/slack.py add --name plumgrowth --token xoxp-...
+#
+# Every scope below is a *user* token scope and read-only: the app can never
+# post, edit, or react. im/mpim cover DMs and group DMs (what /comms needs);
+# channels/groups are included so channel reads + @-mention triage work later.
+display_information:
+  name: personal-access
+  description: Read-only personal access for reply triage (Claude Code).
+oauth_config:
+  scopes:
+    user:
+      - users:read
+      - im:read
+      - im:history
+      - mpim:read
+      - mpim:history
+      - channels:read
+      - channels:history
+      - groups:read
+      - groups:history
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -8,6 +8,7 @@ queries all of them and merges results newest-first; use --account to pick one.
     scripts/gmail.py unread
     scripts/gmail.py search "from:amazon subject:order" --limit 15
     scripts/gmail.py from "mom@example.com" --days 30
+    scripts/gmail.py needs-reply --days 14        # threads awaiting my reply
     scripts/gmail.py read <message-id> --account steve.personal
     scripts/gmail.py draft --account steve.personal --to a@b.com --subject Hi --body "..."
 Drafting only creates a Gmail draft for you to review and send; it never sends.
@@ -168,6 +169,73 @@ def cmd_read(args):
     sys.exit(f"Message {args.id} not found in any authorized account.")
 
 
+def cmd_needs_reply(args):
+    """Threads where the last message is inbound (not from me) — i.e. someone
+    wrote and the ball is in my court. Thread-aware: if I already replied last,
+    the thread is dropped. Defaults to Primary-category inbox to cut newsletters
+    and promos; override with --query."""
+    accounts = g.resolve_accounts(args.account)
+    query = _apply_days(args.query, args.days)
+    items = []
+    for email in accounts:
+        try:
+            svc = g.service("gmail", "v1", email)
+            resp = svc.users().threads().list(
+                userId="me", q=query, maxResults=args.limit).execute()
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"warning: skipping {email}: {type(e).__name__}: "
+                  f"{str(e).splitlines()[0][:100]} (re-auth: scripts/google_auth.py add)",
+                  file=sys.stderr)
+            continue
+        for ref in resp.get("threads", []):
+            thread = svc.users().threads().get(
+                userId="me", id=ref["id"], format="metadata",
+                metadataHeaders=["From", "Subject", "Date"]).execute()
+            msgs = thread.get("messages", [])
+            if not msgs:
+                continue
+            last = msgs[-1]
+            # If my most recent action in the thread was to send, I've replied —
+            # the ball is in their court, not mine.
+            if "SENT" in last.get("labelIds", []):
+                continue
+            ts = int(last["internalDate"])
+            age_days = int((datetime.now(timezone.utc).timestamp() - ts / 1000) // 86400)
+            items.append({
+                "account": email,
+                "thread_id": thread["id"],
+                "id": last["id"],
+                "ts": ts,
+                "date": _fmt_date(last["internalDate"]),
+                "age_days": age_days,
+                "from": _clean(_header(last, "From")),
+                "subject": _clean(_header(last, "Subject")) or "(no subject)",
+                "snippet": _clean(last.get("snippet", "")),
+                "unread": "UNREAD" in last.get("labelIds", []),
+                "messages": len(msgs),
+            })
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    items = items[:args.limit]
+    if args.json:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return
+    if not items:
+        print(f"Nothing awaiting your reply in the last {args.days} days.", file=sys.stderr)
+        return
+    multi = len(accounts) > 1
+    for it in items:
+        acct = f"[{it['account']}] " if multi else ""
+        flag = "● " if it["unread"] else "  "
+        age = f"{it['age_days']}d ago" if it["age_days"] else "today"
+        print(f"{flag}{it['date']} ({age})  {acct}{it['from']}")
+        print(f"    {it['subject']}")
+        if it["snippet"]:
+            print(f"    {it['snippet'][:160]}")
+        print(f"    thread: {it['thread_id']}")
+
+
 def cmd_draft(args):
     """Create a Gmail draft in one account. Never sends — you review and send
     it yourself from Gmail. Body comes from --body or stdin."""
@@ -222,6 +290,11 @@ def main():
     s.add_argument("sender"); s.set_defaults(func=cmd_from)
     s = sub.add_parser("read", parents=[common], help="full body of one message")
     s.add_argument("id"); s.set_defaults(func=cmd_read)
+    s = sub.add_parser("needs-reply", parents=[common],
+                       help="threads whose last message is inbound (awaiting my reply)")
+    s.add_argument("--query", default="in:inbox category:primary",
+                   help="base Gmail query to scope the search")
+    s.set_defaults(func=cmd_needs_reply, days=14)
     s = sub.add_parser("draft", parents=[common],
                        help="create a Gmail draft (never sends)")
     s.add_argument("--to", required=True)
