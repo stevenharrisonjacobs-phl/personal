@@ -12,7 +12,8 @@ genuinely ambiguous — otherwise pick a sensible range and say what you used.
 `queries/` already has: `monthly-spending.sql`, `top-vendors.sql`,
 `uncategorized.sql`, `current-balances.sql`, `account-summary.sql`,
 `categories.sql`, `epics.sql`, `epic-transactions.sql`, `flow-summary.sql`,
-`flow-review.sql`, `vendor-*`, `source-freshness.sql`. Reuse one if it fits.
+`flow-review.sql`, `vendor-*`, `source-freshness.sql`, `manual-income.sql`
+(off-mirror PDF-tracked income). Reuse one if it fits.
 
 ## 3. Write and run the query
 
@@ -26,6 +27,20 @@ genuinely ambiguous — otherwise pick a sensible range and say what you used.
   ```
 - Output over a few KB is saved to a file; read that file, not the truncated
   preview. The wrapper caps at 200 rows — aggregate or narrow if you hit it.
+
+## 3a. Include off-mirror manual income
+
+Some income is tracked by hand from statements/PDFs, not through a bank feed, and
+lives in `finance.manual_income` (surfaced by `finance.v_manual_income`, listed by
+`queries/manual-income.sql`). **Any income answer must add these lines** — they are
+real income in a different bucket, not double-counted spending. Prorate by the
+answer's date range: `monthly_amount × months_in_range`. Current lines: Hannah's
+Kinship 401(k) via KTRADE (employee deferral + employer match), tracked from the
+quarterly PDFs in `.context/`. Caveat: Hannah's Kinship paycheck already appears in
+the mirror as earned income (vendor `Newco Public Relations`), but that is her
+**take-home, already net of the 401(k) deferral** — so the `employee_deferral` line is
+additive, not a double-count. It would only double-count if a *gross*-pay figure were
+ever added. The `employer_match` line never touches the accounts and is always net-new.
 
 ## 4. Exclude non-spending correctly
 
