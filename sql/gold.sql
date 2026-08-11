@@ -429,15 +429,22 @@ WITH pair_candidates AS (
     c.copilot_transaction_type AS flow_evidence_copilot_type,
     c.copilot_excluded AS flow_evidence_copilot_excluded,
     p.paired_transaction_key,
-    LOWER(COALESCE(b.description, b.full_description, '')) AS flow_description
+    LOWER(COALESCE(b.description, b.full_description, '')) AS flow_description,
+    -- Recurring external income the bank labels as a transfer. These arrive from
+    -- outside the household, have no offsetting outflow in any tracked account, and
+    -- would otherwise fall through to needs_review or refund_reimbursement.
+    (b.amount > 0 AND REGEXP_CONTAINS(
+       LOWER(COALESCE(b.description, b.full_description, '')),
+       r'transfer to hannah kasperzak')) AS flow_recurring_family_income
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base` AS b
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.copilot_transaction_matches` AS c USING (transaction_key)
   LEFT JOIN unique_pairs AS p USING (transaction_key)
 ), classified AS (
   SELECT
-    e.* EXCEPT(flow_description),
+    e.* EXCEPT(flow_description, flow_recurring_family_income),
     CASE
       WHEN amount = 0 THEN 'adjustment'
+      WHEN flow_recurring_family_income THEN 'earned_income'
       WHEN flow_evidence_copilot_type = 'regular' AND amount < 0 THEN 'expense'
       WHEN flow_evidence_copilot_type = 'regular' AND amount > 0 THEN 'refund_reimbursement'
       WHEN flow_evidence_copilot_type = 'internal transfer' THEN 'internal_transfer'
@@ -483,6 +490,7 @@ WITH pair_candidates AS (
     END AS flow_type,
     CASE
       WHEN amount = 0 THEN 'zero_amount'
+      WHEN flow_recurring_family_income THEN 'known_recurring_family_income'
       WHEN flow_evidence_copilot_type = 'regular' THEN 'copilot_regular_direction'
       WHEN flow_evidence_copilot_type = 'internal transfer' THEN 'copilot_internal_transfer'
       WHEN amount > 0 AND (
@@ -523,6 +531,7 @@ WITH pair_candidates AS (
     END AS flow_reason,
     CASE
       WHEN amount = 0 THEN 1.00
+      WHEN flow_recurring_family_income THEN 0.98
       WHEN flow_evidence_copilot_type IN ('regular', 'internal transfer') THEN 0.99
       WHEN amount > 0 AND (
         REGEXP_CONTAINS(flow_description, r'dividend|interest payment|sweep interest')
