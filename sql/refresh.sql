@@ -153,6 +153,37 @@ WITH source AS (
     JSON_VALUE(payload, '$.Source') AS source,
     payload AS source_payload
   FROM source
+), manual_balance_rows AS (
+  -- Off-Tiller accounts entered by hand (no bank feed to import them). The dollar
+  -- figures live ONLY in BigQuery (finance.manual_balances) -- never in git --
+  -- the same amounts-stay-in-BigQuery pattern as finance.manual_income. Each row
+  -- is re-stamped to CURRENT_DATE() on every refresh so the balance always counts
+  -- in v_current_balances and the current month's v_monthly_net_worth; the source
+  -- statement date is preserved in source_payload for provenance. Update a figure
+  -- with an UPDATE on finance.manual_balances -- no code change, no redeploy.
+  SELECT
+    TO_HEX(SHA256(CONCAT('manual:', balance_id, '|', CAST(CURRENT_DATE() AS STRING)))) AS balance_key,
+    CURRENT_DATE() AS balance_date,
+    CURRENT_TIME() AS balance_time_utc,
+    account_name,
+    account_number_masked,
+    institution,
+    CAST(balance AS NUMERIC) AS balance,
+    DATE_TRUNC(CURRENT_DATE(), MONTH) AS balance_month,
+    DATE_TRUNC(CURRENT_DATE(), WEEK) AS balance_week,
+    CONCAT('manual:', balance_id) AS account_id,
+    CAST(NULL AS STRING) AS balance_id,
+    account_type,
+    LOWER(account_class) AS account_class,
+    'manual' AS source,
+    TO_JSON_STRING(STRUCT(
+      'manual' AS entry_source,
+      owner AS owner,
+      as_of_statement AS balance_as_of_statement,
+      notes AS notes
+    )) AS source_payload
+  FROM `__PROJECT_ID__.__FINANCE_DATASET__.manual_balances`
+  WHERE balance IS NOT NULL
 )
 SELECT
   COALESCE(
@@ -166,4 +197,6 @@ SELECT
   *
 FROM normalized
 WHERE balance_date IS NOT NULL
-  AND balance IS NOT NULL;
+  AND balance IS NOT NULL
+UNION ALL
+SELECT * FROM manual_balance_rows;
