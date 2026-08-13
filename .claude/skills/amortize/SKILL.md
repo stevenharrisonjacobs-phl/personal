@@ -95,12 +95,13 @@ WHERE transaction_key = '<key>' GROUP BY 1,3 ORDER BY 1;
   different things under one vendor:
   - **Annual dues** — three charges on 2 Jan totalling **$8,200**. Amortize over the
     membership year (Jan–Dec). Re-schedule each January.
-  - **Everything else — do NOT amortize.** ~50 charges/yr averaging $40 (about
-    $2,000/yr) are food and drink at the club, consumed on the spot. Same for the
-    occasional $300–999 charge unless Steven says it's an annual item.
+  - **Everything else — do NOT amortize.** ~52 charges/yr (about $2,800/yr) are
+    food and drink at the club, consumed on the spot.
 
-  Rule of thumb: a Fitler charge is dues only if it lands on/near 2 January and is
-  four figures. Everything else is dining.
+  This is enforced, not just documented: `finance.classification_rules` splits the
+  vendor by amount — `fitler-dues` (>= $1,000) → Fitness, `fitler-food` (< $1,000)
+  → Restaurants & Bars. The club bills both through one ACH descriptor, so amount
+  is the only signal that separates them.
 - **Recurring lumps are scheduled too, one at a time.** There is no automatic
   per-category spreading — an earlier `cadence` column tried that and was the wrong
   grain (a category holds annual dues *and* $4 drop-in charges). So an annual gym

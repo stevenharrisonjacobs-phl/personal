@@ -13,6 +13,33 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__FINANCE_DATASET__.classification_ru
   created_at TIMESTAMP NOT NULL
 );
 
+-- Rules that need an amount condition, which neither vendor_rules nor
+-- vendor_category_map can express (both key on description/vendor alone).
+--
+-- Fitler Club bills dues and restaurant tabs through the same ACH descriptor, so
+-- the vendor cannot be split by name. Only the size distinguishes them: three
+-- four-figure charges on 2 January are the annual membership; everything else is
+-- food and drink consumed at the club.
+MERGE `__PROJECT_ID__.__FINANCE_DATASET__.classification_rules` AS target
+USING UNNEST([
+  STRUCT('fitler-dues' AS rule_id, 10 AS priority, r'(?i)fitler' AS description_regex,
+         'Fitness' AS category, NUMERIC '1000' AS min_absolute_amount,
+         CAST(NULL AS NUMERIC) AS max_absolute_amount),
+  STRUCT('fitler-food', 20, r'(?i)fitler',
+         'Restaurants & Bars', CAST(NULL AS NUMERIC), NUMERIC '999.99')
+]) AS seed
+ON target.rule_id = seed.rule_id
+WHEN MATCHED AND target.notes = 'Seeded classification rule' THEN
+  UPDATE SET priority = seed.priority, description_regex = seed.description_regex,
+             category = seed.category, min_absolute_amount = seed.min_absolute_amount,
+             max_absolute_amount = seed.max_absolute_amount
+WHEN NOT MATCHED THEN
+  INSERT (rule_id, priority, description_regex, direction, category,
+          min_absolute_amount, max_absolute_amount, notes, enabled, created_at)
+  VALUES (seed.rule_id, seed.priority, seed.description_regex, 'expense', seed.category,
+          seed.min_absolute_amount, seed.max_absolute_amount,
+          'Seeded classification rule', TRUE, CURRENT_TIMESTAMP());
+
 CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__FINANCE_DATASET__.transaction_overrides` (
   transaction_key STRING NOT NULL,
   category STRING NOT NULL,
