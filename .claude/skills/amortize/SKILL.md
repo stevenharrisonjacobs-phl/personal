@@ -91,6 +91,16 @@ WHERE transaction_key = '<key>' GROUP BY 1,3 ORDER BY 1;
   used when bought. Amortization is for things with a *useful life*. If the ask is
   "smooth out my lumpy restaurant spending," that's a reporting-window question, not
   this.
+- **Fitler Club specifically — only the annual dues.** The account mixes two very
+  different things under one vendor:
+  - **Annual dues** — three charges on 2 Jan totalling **$8,200**. Amortize over the
+    membership year (Jan–Dec). Re-schedule each January.
+  - **Everything else — do NOT amortize.** ~50 charges/yr averaging $40 (about
+    $2,000/yr) are food and drink at the club, consumed on the spot. Same for the
+    occasional $300–999 charge unless Steven says it's an annual item.
+
+  Rule of thumb: a Fitler charge is dues only if it lands on/near 2 January and is
+  four figures. Everything else is dining.
 - **Recurring lumps are scheduled too, one at a time.** There is no automatic
   per-category spreading — an earlier `cadence` column tried that and was the wrong
   grain (a category holds annual dues *and* $4 drop-in charges). So an annual gym
