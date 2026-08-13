@@ -1000,8 +1000,13 @@ FULL OUTER JOIN transaction_accounts AS t USING (account_key);
 -- Span precedence (first match wins):
 --   1. amortization_schedule on the transaction   -- explicit, /amortize skill
 --   2. amortization_schedule on the transaction's epic
---   3. category cadence: annual -> 12, quarterly -> 3
---   4. everything else -> 1 (pass through)
+--   3. everything else -> 1 (pass through)
+--
+-- Spreading is deliberately explicit. An earlier version derived a span from a
+-- per-category cadence, but a category has no billing cadence -- "Fitness" holds
+-- $3,600 annual dues, a monthly Peloton bill and $4 drop-in charges. It smeared
+-- 133 sub-$100 transactions across 12 months each. Recurring tax liability is
+-- handled properly by finance.accruals instead.
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.v_spending_amortized` AS
 WITH sched AS (
   SELECT * EXCEPT(rn) FROM (
@@ -1020,20 +1025,17 @@ WITH sched AS (
     t.vendor_name,
     t.epic_name,
     c.cost_behavior,
-    c.cadence,
     c.essential,
     COALESCE(st.start_date, se.start_date, t.transaction_date) AS span_start,
     COALESCE(
       -- explicit schedule: inclusive month count between start and end
       DATE_DIFF(DATE_TRUNC(COALESCE(st.end_date, se.end_date), MONTH),
                 DATE_TRUNC(COALESCE(st.start_date, se.start_date), MONTH), MONTH) + 1,
-      CASE c.cadence WHEN 'annual' THEN 12 WHEN 'quarterly' THEN 3 ELSE 1 END,
       1
     ) AS span_months,
     CASE
       WHEN st.amortization_id IS NOT NULL THEN 'schedule:transaction'
       WHEN se.amortization_id IS NOT NULL THEN 'schedule:epic'
-      WHEN c.cadence IN ('annual', 'quarterly') THEN CONCAT('cadence:', c.cadence)
       ELSE 'none'
     END AS amortization_source
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS t
@@ -1055,7 +1057,6 @@ SELECT
   amortization_source,
   canonical_category,
   cost_behavior,
-  cadence,
   essential,
   vendor_name,
   epic_name

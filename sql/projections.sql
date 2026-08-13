@@ -218,7 +218,6 @@ SELECT
   h.month,
   c.category_name AS canonical_category,
   c.cost_behavior,
-  c.cadence,
   c.essential,
   ROUND(COALESCE(
     af.avg_accrual,

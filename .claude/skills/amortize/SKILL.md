@@ -91,10 +91,13 @@ WHERE transaction_key = '<key>' GROUP BY 1,3 ORDER BY 1;
   used when bought. Amortization is for things with a *useful life*. If the ask is
   "smooth out my lumpy restaurant spending," that's a reporting-window question, not
   this.
-- **Recurring lumps don't belong here either.** An annual insurance premium or
-  quarterly taxes are handled automatically by `categories.cadence`
-  (annual → /12, quarterly → /3). Only reach for a schedule when the item is a
-  one-off with a life.
+- **Recurring lumps are scheduled too, one at a time.** There is no automatic
+  per-category spreading — an earlier `cadence` column tried that and was the wrong
+  grain (a category holds annual dues *and* $4 drop-in charges). So an annual gym
+  bill gets its own 12-month schedule each year. It's a handful of charges a year.
+- **Tax liability is not amortized — it's accrued.** `finance.accruals` recognises
+  it monthly as revenue is earned, which is more accurate than spreading the
+  quarterly payment backward. Don't schedule tax payments here.
 - **Conservation holds.** `SUM(amortized_amount) == SUM(spend_amount)` over all
   time — amortizing moves cost between months, it never creates or destroys it. If
   a change breaks that equality, something is wrong.
@@ -104,5 +107,6 @@ WHERE transaction_key = '<key>' GROUP BY 1,3 ORDER BY 1;
 
 ## Reference
 - Span precedence and view logic: `sql/gold.sql` → `v_spending_amortized`
-- Cost tiers and cadence: `gold.categories` (`cost_behavior`, `cadence`, `essential`)
+- Cost tiers: `gold.categories` (`cost_behavior`, `essential`)
+- Accruals (pre-amortization): `sql/projections.sql` → `v_accrued_costs`
 - Guardrails and views: `AGENTS.md`
