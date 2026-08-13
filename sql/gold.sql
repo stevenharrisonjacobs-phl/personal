@@ -43,6 +43,22 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map`
   created_at TIMESTAMP NOT NULL
 );
 
+-- Explicit amortization schedules. A capital purchase hits the accounts on one
+-- day but is *used* over a span; this spreads its cost across start_date..end_date
+-- in gold.v_spending_amortized. Target exactly one of transaction_key (a single
+-- charge) or epic_name (a multi-charge project). Managed by the /amortize skill.
+CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.amortization_schedule` (
+  amortization_id STRING NOT NULL,
+  transaction_key STRING,
+  epic_name STRING,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  label STRING,
+  notes STRING,
+  enabled BOOL NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+
 MERGE `__PROJECT_ID__.__GOLD_DATASET__.vendor_aliases` AS target
 USING UNNEST([
   STRUCT('amazon' AS alias_key, 'Amazon' AS alias_name, 'Amazon' AS canonical_vendor_name),
@@ -977,3 +993,70 @@ SELECT
   t.account_key IS NOT NULL AS has_transactions
 FROM balance_accounts AS b
 FULL OUTER JOIN transaction_accounts AS t USING (account_key);
+
+-- Spending with lumpy costs spread over the period they cover. One transaction
+-- becomes N monthly slices; SUM(amortized_amount) == SUM(spend_amount) always.
+--
+-- Span precedence (first match wins):
+--   1. amortization_schedule on the transaction   -- explicit, /amortize skill
+--   2. amortization_schedule on the transaction's epic
+--   3. category cadence: annual -> 12, quarterly -> 3
+--   4. everything else -> 1 (pass through)
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.v_spending_amortized` AS
+WITH sched AS (
+  SELECT * EXCEPT(rn) FROM (
+    SELECT s.*, ROW_NUMBER() OVER (
+      PARTITION BY COALESCE(s.transaction_key, s.epic_name) ORDER BY s.created_at DESC
+    ) AS rn
+    FROM `__PROJECT_ID__.__GOLD_DATASET__.amortization_schedule` AS s
+    WHERE s.enabled
+  ) WHERE rn = 1
+), base AS (
+  SELECT
+    t.transaction_key,
+    t.transaction_date,
+    t.spend_amount,
+    t.canonical_category,
+    t.vendor_name,
+    t.epic_name,
+    c.cost_behavior,
+    c.cadence,
+    c.essential,
+    COALESCE(st.start_date, se.start_date, t.transaction_date) AS span_start,
+    COALESCE(
+      -- explicit schedule: inclusive month count between start and end
+      DATE_DIFF(DATE_TRUNC(COALESCE(st.end_date, se.end_date), MONTH),
+                DATE_TRUNC(COALESCE(st.start_date, se.start_date), MONTH), MONTH) + 1,
+      CASE c.cadence WHEN 'annual' THEN 12 WHEN 'quarterly' THEN 3 ELSE 1 END,
+      1
+    ) AS span_months,
+    CASE
+      WHEN st.amortization_id IS NOT NULL THEN 'schedule:transaction'
+      WHEN se.amortization_id IS NOT NULL THEN 'schedule:epic'
+      WHEN c.cadence IN ('annual', 'quarterly') THEN CONCAT('cadence:', c.cadence)
+      ELSE 'none'
+    END AS amortization_source
+  FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS t
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS c
+    ON c.category_name = t.canonical_category AND c.active
+  LEFT JOIN sched AS st ON st.transaction_key = t.transaction_key
+  LEFT JOIN sched AS se ON se.epic_name = t.epic_name AND se.transaction_key IS NULL
+  WHERE t.flow_type = 'expense' AND t.spend_amount > 0
+)
+SELECT
+  transaction_key,
+  DATE_ADD(DATE_TRUNC(span_start, MONTH), INTERVAL offset_month MONTH) AS amortized_month,
+  -- deliberately unrounded: rounding per-slice breaks the conservation invariant
+  -- (SUM(amortized_amount) == SUM(spend_amount)). Round at the point of display.
+  spend_amount / span_months AS amortized_amount,
+  spend_amount AS original_amount,
+  transaction_date AS original_date,
+  span_months,
+  amortization_source,
+  canonical_category,
+  cost_behavior,
+  cadence,
+  essential,
+  vendor_name,
+  epic_name
+FROM base, UNNEST(GENERATE_ARRAY(0, span_months - 1)) AS offset_month;
