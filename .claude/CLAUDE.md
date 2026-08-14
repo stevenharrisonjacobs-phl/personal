@@ -15,6 +15,24 @@ Repo facts belong in each repo's own `CLAUDE.md`, not here.
   and define terms inline rather than assuming or omitting them.
 - Never make him cross-reference labels or numbering you invented earlier.
 
+## Triage — the first decision in any workspace
+
+Before the first action, state the verdict in one line. Two questions, in order.
+
+**1. Can it be undone?** Reversible (edits, branches, dry runs, read-only
+queries) → proceed. Irreversible (production DDL, deploys, scheduler changes,
+release flags, external sends, publishing) → **prepare, verify, and stop for
+Steven**, at any size. If one step is irreversible, the task is.
+
+**2. How many write-scopes?** One → **solo**, just do the work. Several that do
+not overlap → **fan out** subagents in this session. Overlapping scopes *and*
+real judgment *and* something irreversible → **program** (`/orchestrate`).
+
+Diff the scopes before fanning out — overlapping edits merge cleanly and still
+break. Bias hard toward solo; the ceiling on parallelism is Steven's review
+capacity, not compute. "Solo, reversible." is a complete triage; only
+escalations need a reason. Details and repo setup: `/harness`.
+
 ## Authority
 
 - Steven is the **sole operator and approver of record** on every project here.
