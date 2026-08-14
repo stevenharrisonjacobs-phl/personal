@@ -24,6 +24,7 @@ scripts/gcal.py agenda --days 7 --json --limit 120                     # week of
 scripts/gmail.py search "category:primary is:unread" --days 7 --json --limit 30
 scripts/gmail.py search "is:starred" --days 45 --json --limit 15       # open loops
 scripts/imessages.py needs-reply --days 4 --json
+scripts/weather.py brief --refresh --json                              # weather delta (better/worse than before)
 grep -rl "" projects/**/*.md 2>/dev/null                                # project tracker files
 ```
 
@@ -53,15 +54,28 @@ Apply judgment; do not dump raw data:
 - **Conflicts**: call out overlapping events, double-bookings, and days that are
   back-to-back. Dedupe the same event appearing on multiple accounts' calendars.
 - **Ages**: for anything awaiting a reply, say how old it is ("3 days").
+- **Weather**: one line, **delta-first** — he checks weather for *change*, not raw
+  numbers. Lead with the `day_over_day` verdict (better/worse than yesterday + its
+  drivers). If any upcoming day is trending worse across snapshots (`trend` in the
+  JSON), append it. Then *cross-reference the calendar*: if a worsening day lands
+  on an outdoor event, travel, or a kids' activity, promote that to **Top of mind**
+  ("Sat's forecast keeps degrading — 3 snapshots running — and Bruce's game is
+  outdoors"). If `snapshots_on_record` < 2, just give today-vs-yesterday. If the
+  pull errored (offline), skip the line — don't fabricate.
 
 ## Step 3 — Format
 
 ```
 # Morning brief — {Weekday, Mon D}
 
+**Weather** — one delta-first line: better or worse than yesterday (with the
+drivers), plus any upcoming day trending worse. The change matters, not the raw
+numbers.
+
 ## Top of mind
 3-5 bullets max. The things he'd be upset to discover he missed: hard
-deadlines, today's appointments, unanswered direct questions, conflicts.
+deadlines, today's appointments, unanswered direct questions, conflicts, and a
+worsening weather revision that threatens a plan on the calendar.
 
 ## Needs a response
 **Texts** — who, what, how old, suggested one-line action.
