@@ -31,7 +31,11 @@ fi
 mkdir -p orchestration
 cp "$TEMPLATE" "$DEST"
 
-REPO=$(git config --get remote.origin.url 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+?)(\.git)?$#\1#' || echo "<org/repo>")
+# Strip the .git suffix first, then take org/repo. (A lazy quantifier here —
+# [^/]+? — is a PCRE-ism that BSD/macOS sed rejects outright, and the error was
+# swallowed into the placeholder on every macOS adoption.)
+REPO=$(git config --get remote.origin.url 2>/dev/null | sed -E -e 's#\.git$##' -e 's#.*[:/]([^/]+/[^/]+)$#\1#')
+[ -n "$REPO" ] || REPO="<org/repo>"
 DEFAULT=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)
 TODAY=$(date +%Y-%m-%d)
 
@@ -95,9 +99,29 @@ git ls-files 2>/dev/null | grep -iE '\.(lock|gen\.[a-z]+|snap)$|lock\.json$|gene
 probe ""
 probe "     -->"
 
+# --- task graph: offer beads, if it is installed ------------------------------
+# The profile answers "what are the rules here". A task graph answers "what is
+# the state of the work". Both are per-repo, both must survive the worktree, and
+# remembering them as two separate chores is how one of them gets skipped.
+BEADS_NOTE=""
+if command -v bd >/dev/null 2>&1; then
+  if [ -d .beads ]; then
+    BEADS_NOTE="  .beads/ already present — leaving it alone."
+  else
+    if bd init >/dev/null 2>&1; then
+      BEADS_NOTE="  Initialized .beads/ (task graph). 'bd ready' answers what can be worked on now."
+    else
+      BEADS_NOTE="  'bd init' failed — run it by hand if you want the task graph here."
+    fi
+  fi
+else
+  BEADS_NOTE="  bd (beads) not installed — skipped the task graph. 'brew install beads' to add one."
+fi
+
 cat <<EOF
 
 Created $DEST
+$BEADS_NOTE
 
 Next:
   1. Fill sections 1-6 BY MEASURING — run the commands, read the config, hit the
@@ -106,6 +130,11 @@ Next:
      conversation with the approver, not a guess. It names what cannot be undone.
   3. Delete the PROBE RESULTS block once you have folded in the real answers.
   4. Commit it. The profile must survive the worktree.
+
+If you use the task graph as the lane registry, record each lane's owned globs in
+the issue metadata (bd create --metadata '{"owns":["path/**"]}') — a dependency
+graph has no concept of who writes which files, and a ready queue that is
+dependency-clean can still be scope-colliding. See references/orchestrator.md §4.
 
 Then: bash $SKILL_DIR/scripts/orch-init.sh <program-slug>
 EOF
