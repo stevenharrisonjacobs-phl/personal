@@ -31,7 +31,8 @@ started **Plum Growth**, his own **AI GTM consulting agency**.
   **Matt (CS, works for Pete)**, **Christian (finance)**, **Cody (head of
   product)**, André (bi-weekly 1:1; role TBD). Rhythm: Pipeline Standup
   (W/F 12:30), GTM Weekly (Mon 2:00), All Sled (Wed 10:30), Content Weekly
-  (Fri 1:30), watercooler (Tue 11:30). ASX = partner/client **(?)**. Madrona
+  (Fri 1:30), watercooler (Tue 11:30 — **Steven auto-skips this; never surface
+  it or flag conflicts against it**). ASX = partner/client **(?)**. Madrona
   (Matt Witt) — investor contact **(?)**.
 - **Plum Growth** (`steven@plumgrowth.ai`) — his new agency, AI GTM consulting.
   Growth of this business is a top-priority workstream.
