@@ -154,6 +154,33 @@ last clipboard involvement the lane gets (SKILL invariant 8). Name the workspace
 after the lane slug (`gv3-03-preflight`), never a default city name: an archive
 audit found three unrelated efforts answering to the same reused city name.
 
+### Ready ≠ parallelizable — diff the write-scopes before you fan out
+
+**Unblocked says nothing about who writes what.** Before dispatching N ready
+items concurrently, diff their owned globs. Any overlap collapses them into
+**one worker on one branch**, however independent the tasks sound.
+
+This is invariant 2 applied at dispatch time, and it is easy to skip because the
+failure is silent. Three approved changes to one subsystem — a request-path
+predicate, a constant rename, an artifact field — read as three tasks and are
+one write-scope. Dispatched in parallel they produce **no merge conflict at
+all**: each touched different lines, so git merges all three cleanly into code
+that calls a constant the rename deleted. A textual merge cannot see a semantic
+collision. Only the pre-dispatch glob diff can.
+
+What genuinely parallelizes beside such a lane is work that writes **new files**
+— a DDL draft, a runbook, a design doc. Split those out; they cost nothing and
+they are usually the long pole anyway.
+
+**If the task registry is a graph tool rather than `lanes.json`** (Beads and its
+kin), note the gap: those tools carry `blocks`/`parent-child`/`related` edges
+but have **no edge for "writes the same paths."** `bd ready` will hand you a set
+that is dependency-clean and scope-colliding, with nothing on screen saying so.
+Carry the scope yourself — put the lane's globs in the issue's metadata at
+creation (`--metadata '{"owns":["path/**"],"forbids":["other/**"]}'`) and diff
+them across the ready set before fanning out. A dependency graph is not a
+write-scope map; do not let a green ready-queue substitute for one.
+
 ## 5. Verify — from git, never from claims
 
 **And learn a lane finished from git or a notification — never from the

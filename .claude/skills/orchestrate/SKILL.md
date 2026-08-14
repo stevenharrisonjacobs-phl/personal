@@ -103,7 +103,11 @@ Structure, not policy. Each is here because its absence cost something real.
 2. **One writer per path-scope.** Every lane declares owned globs and an explicit
    forbid list. Shared aggregators belong to the orchestrator and are resolved
    **exactly once**, centrally. Lanes request shared edits in their handoff.
-   → profile §3.
+   Enforce it **at dispatch**: diff the owned globs across everything you are
+   about to fan out, and collapse any overlap into one worker. Unblocked is not
+   the same as parallelizable, and the failure is silent — three edits to one
+   subsystem merge cleanly and still break, because a rename in one is invisible
+   to the textual merge of the others. → profile §3.
 
 3. **Nothing inherits authority.** Every action on the profile's irreversible
    list needs its own named, separately granted approval, pasted as an editable
