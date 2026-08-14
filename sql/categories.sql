@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` (
 MERGE `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` AS target
 USING UNNEST([
   STRUCT('tiller' AS source_system, '' AS source_parent_category, 'Restaurants' AS source_category, 'restaurants_bars' AS category_id),
+  STRUCT('tiller', '', 'Media', 'media'),
+  STRUCT('tiller', '', 'Gym', 'fitness'),
   STRUCT('tiller', '', 'Shopping', 'clothes_grooming'),
   STRUCT('tiller', '', 'Groceries', 'groceries'),
   STRUCT('tiller', '', 'Transfer', 'internal_transfer'),

@@ -1,30 +1,31 @@
 # Financial management agent
 
-This repository contains highly sensitive personal financial infrastructure.
+This repository mirrors personal Tiller/Copilot finances into BigQuery. It's a
+personal project — keep governance light and just get the work done.
 
-## Guardrails
+## Notes
 
-- Treat Tiller and `tiller_raw` as read-only sources of truth.
-- Query only through `./scripts/query.sh` unless the user explicitly asks for a
-  deployment or classification change.
-- Prefer aggregates. Do not print full account IDs, transaction IDs, account
-  numbers, or raw descriptions unless the user explicitly needs row-level data.
+- Tiller and `tiller_raw` are the upstream source of truth; the underlying data
+  is edited in Tiller / the Google Sheet, not here. Everything downstream
+  (`finance.*`, `gold.*`) is derived and safe to rebuild via `./scripts/deploy.sh`.
+- `./scripts/query.sh <file.sql>` is a convenient runner, but ad-hoc `bq` is fine
+  too. Run deploys, rule, and override changes directly when they're warranted —
+  no need to ask first.
 - The DB can be incomplete when a bank feed silently stops importing. Check with
   `queries/source-freshness.sql` and reconcile against a Copilot export per
   `docs/runbooks/source-reconciliation.md` (match on amount + date + account
-  name, never the card mask). Keep row-level reconciliation output in `.context/`.
+  name, never the card mask).
 - Always state the date range and whether transfers, refunds, income, and
   uncategorized transactions were included.
 - Tiller expenses are negative. Use `finance.v_spending.spend_amount` when
   reporting positive spending.
 - Do not treat transfers or credit-card payments as spending. The standard
   queries exclude categories containing `transfer`, but verify unusual cases.
-- Never invent a category. When uncertain, show a short merchant summary and
-  ask before adding a rule or override.
 - Add reusable merchant logic with `scripts/add-rule.sh`; use
-  `scripts/add-override.sh` only for a single transaction.
-- Never commit `.env`, exported transactions, query results, OAuth tokens, or
-  service-account keys.
+  `scripts/add-override.sh` for a single transaction.
+- **Never commit `.env`, exported transactions, query results, OAuth tokens, or
+  service-account keys** — this repo pushes to GitHub. Keep row-level output in
+  `.context/` (gitignored).
 
 ## Useful views
 

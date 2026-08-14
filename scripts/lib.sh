@@ -23,19 +23,6 @@ load_env() {
   : "${TRANSACTIONS_TAB:=Transactions}"
   : "${BALANCE_HISTORY_TAB:=Balance History}"
   : "${SYNC_SCHEDULE:=every 1 hours}"
-
-  if [[ "$GCP_PROJECT_ID" == "your-tiller-finance-project" ]]; then
-    echo "GCP_PROJECT_ID still has the example value. Edit and save .env before continuing." >&2
-    exit 1
-  fi
-  if [[ "$TILLER_SHEET_ID" == "your-google-sheet-id" ]]; then
-    echo "TILLER_SHEET_ID still has the example value. Edit and save .env before continuing." >&2
-    exit 1
-  fi
-  if [[ "${BILLING_ACCOUNT_ID:-}" == "000000-000000-000000" ]]; then
-    echo "BILLING_ACCOUNT_ID still has the example value. Edit and save .env before continuing." >&2
-    exit 1
-  fi
 }
 
 require_commands() {

@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transaction_vendor_o
   created_at TIMESTAMP NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_overrides` (
+  transaction_key STRING NOT NULL,
+  flow_type STRING NOT NULL,
+  notes STRING,
+  created_at TIMESTAMP NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.vendor_aliases` (
   alias_key STRING NOT NULL,
   alias_name STRING NOT NULL,
@@ -256,9 +263,19 @@ WITH deduplicated AS (
    AND a.source_system = 'tiller'
    AND COALESCE(a.source_parent_category, '') = ''
    AND REGEXP_REPLACE(LOWER(a.source_category), r'[^a-z0-9]+', '') = REGEXP_REPLACE(LOWER(COALESCE(v.category, '')), r'[^a-z0-9]+', '')
+  -- Fallback: when no tiller alias matches (e.g. a Copilot-taxonomy category name such as
+  -- 'Media & Entertainment' or 'Work Expenses'), resolve the category by matching the finance
+  -- category string directly against the canonical category_name. Only fires when the alias
+  -- lookup missed, so it cannot change any row that already canonicalizes.
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS c
     ON c.active
-   AND c.category_id = a.category_id
+   AND (
+     c.category_id = a.category_id
+     OR (
+       a.category_id IS NULL
+       AND REGEXP_REPLACE(LOWER(c.category_name), r'[^a-z0-9]+', '') = REGEXP_REPLACE(LOWER(COALESCE(v.category, '')), r'[^a-z0-9]+', '')
+     )
+   )
 ), epic_resolved AS (
   SELECT
     c.*,
@@ -438,6 +455,13 @@ WITH pair_candidates AS (
     e.* EXCEPT(flow_description),
     CASE
       WHEN amount = 0 THEN 'adjustment'
+      -- Recurring monthly family distribution from Dean (Hannah's father): earned income.
+      WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'earned_income'
+      -- Cash deposits/checks moving in or out of a brokerage account are transfers,
+      -- not income/expense (dividends & investment activity match other descriptions above).
+      WHEN UPPER(account_name) LIKE 'BROKERAGE%'
+       AND REGEXP_CONTAINS(flow_description, r'mobile deposit|remote online deposit|deposit id|check issued|expanded bank deposit|^deposit$')
+        THEN 'internal_transfer'
       WHEN flow_evidence_copilot_type = 'regular' AND amount < 0 THEN 'expense'
       WHEN flow_evidence_copilot_type = 'regular' AND amount > 0 THEN 'refund_reimbursement'
       WHEN flow_evidence_copilot_type = 'internal transfer' THEN 'internal_transfer'
@@ -483,6 +507,10 @@ WITH pair_candidates AS (
     END AS flow_type,
     CASE
       WHEN amount = 0 THEN 'zero_amount'
+      WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'kasperzak_family_distribution'
+      WHEN UPPER(account_name) LIKE 'BROKERAGE%'
+       AND REGEXP_CONTAINS(flow_description, r'mobile deposit|remote online deposit|deposit id|check issued|expanded bank deposit|^deposit$')
+        THEN 'brokerage_cash_movement'
       WHEN flow_evidence_copilot_type = 'regular' THEN 'copilot_regular_direction'
       WHEN flow_evidence_copilot_type = 'internal transfer' THEN 'copilot_internal_transfer'
       WHEN amount > 0 AND (
@@ -523,6 +551,10 @@ WITH pair_candidates AS (
     END AS flow_reason,
     CASE
       WHEN amount = 0 THEN 1.00
+      WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 0.99
+      WHEN UPPER(account_name) LIKE 'BROKERAGE%'
+       AND REGEXP_CONTAINS(flow_description, r'mobile deposit|remote online deposit|deposit id|check issued|expanded bank deposit|^deposit$')
+        THEN 0.99
       WHEN flow_evidence_copilot_type IN ('regular', 'internal transfer') THEN 0.99
       WHEN amount > 0 AND (
         REGEXP_CONTAINS(flow_description, r'dividend|interest payment|sweep interest')
@@ -549,15 +581,63 @@ WITH pair_candidates AS (
       ELSE 0.25
     END AS flow_confidence
   FROM evidence AS e
+), account_identity AS (
+  SELECT
+    mask4,
+    COUNT(DISTINCT account_id) AS id_count,
+    ARRAY_AGG(account_id ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_account_id,
+    ARRAY_AGG(account_name ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_account_name,
+    ARRAY_AGG(institution ORDER BY transaction_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS canonical_institution
+  FROM (
+    SELECT
+      RIGHT(REGEXP_REPLACE(COALESCE(account_number_masked, ''), r'[^0-9]+', ''), 4) AS mask4,
+      account_id,
+      account_name,
+      institution,
+      transaction_date
+    FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base`
+    WHERE COALESCE(account_id, '') != ''
+      AND RIGHT(REGEXP_REPLACE(COALESCE(account_number_masked, ''), r'[^0-9]+', ''), 4) != ''
+  )
+  GROUP BY mask4
+), flow_overrides AS (
+  SELECT * EXCEPT(override_rank)
+  FROM (
+    SELECT
+      o.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY transaction_key
+        ORDER BY created_at DESC
+      ) AS override_rank
+    FROM `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_overrides` AS o
+  )
+  WHERE override_rank = 1
+), resolved AS (
+  SELECT
+    c.* EXCEPT(flow_type, flow_reason, flow_confidence),
+    COALESCE(o.flow_type, c.flow_type) AS flow_type,
+    CASE WHEN o.flow_type IS NOT NULL THEN 'manual_flow_override' ELSE c.flow_reason END AS flow_reason,
+    CASE WHEN o.flow_type IS NOT NULL THEN 1.00 ELSE c.flow_confidence END AS flow_confidence
+  FROM classified AS c
+  LEFT JOIN flow_overrides AS o USING (transaction_key)
 )
 SELECT
-  *,
+  c.* EXCEPT(account_id, account_name, institution),
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_account_id ELSE c.account_id END AS account_id,
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_account_name ELSE c.account_name END AS account_name,
+  CASE WHEN COALESCE(c.account_id, '') = '' AND ai.id_count = 1
+       THEN ai.canonical_institution ELSE c.institution END AS institution,
   CASE WHEN flow_type = 'expense' THEN -amount ELSE 0 END AS flow_expense_amount,
   CASE WHEN flow_type IN ('earned_income', 'investment_income') THEN amount ELSE 0 END AS flow_income_amount,
   CASE WHEN flow_type = 'refund_reimbursement' THEN amount ELSE 0 END AS flow_refund_amount,
   CASE WHEN flow_type IN ('internal_transfer', 'credit_card_payment') THEN ABS(amount) ELSE 0 END AS flow_transfer_amount,
-  CASE WHEN flow_type = 'investment_activity' THEN ABS(amount) ELSE 0 END AS flow_investment_activity_amount
-FROM classified;
+  CASE WHEN flow_type = 'investment_activity' THEN ABS(amount) ELSE 0 END AS flow_investment_activity_amount,
+  CASE WHEN flow_type = 'capital_proceeds' THEN amount ELSE 0 END AS flow_capital_proceeds_amount
+FROM resolved AS c
+LEFT JOIN account_identity AS ai
+  ON ai.mask4 = RIGHT(REGEXP_REPLACE(COALESCE(c.account_number_masked, ''), r'[^0-9]+', ''), 4);
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_review` AS
 SELECT
