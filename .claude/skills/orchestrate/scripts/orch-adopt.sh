@@ -34,7 +34,10 @@ cp "$TEMPLATE" "$DEST"
 # Strip the .git suffix first, then take org/repo. (A lazy quantifier here —
 # [^/]+? — is a PCRE-ism that BSD/macOS sed rejects outright, and the error was
 # swallowed into the placeholder on every macOS adoption.)
-REPO=$(git config --get remote.origin.url 2>/dev/null | sed -E -e 's#\.git$##' -e 's#.*[:/]([^/]+/[^/]+)$#\1#')
+# `|| true` is load-bearing: with no remote configured, git config exits 1, and
+# under `set -o pipefail` that propagates through the command substitution and
+# `set -e` kills the script before it prints anything.
+REPO=$(git config --get remote.origin.url 2>/dev/null | sed -E -e 's#\.git$##' -e 's#.*[:/]([^/]+/[^/]+)$#\1#' || true)
 [ -n "$REPO" ] || REPO="<org/repo>"
 DEFAULT=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || echo main)
 TODAY=$(date +%Y-%m-%d)
@@ -99,23 +102,28 @@ git ls-files 2>/dev/null | grep -iE '\.(lock|gen\.[a-z]+|snap)$|lock\.json$|gene
 probe ""
 probe "     -->"
 
-# --- task graph: offer beads, if it is installed ------------------------------
-# The profile answers "what are the rules here". A task graph answers "what is
-# the state of the work". Both are per-repo, both must survive the worktree, and
-# remembering them as two separate chores is how one of them gets skipped.
+# --- task graph: REPORT beads, never run it -----------------------------------
+# The profile answers "what are the rules here"; a task graph answers "what is
+# the state of the work". Both are per-repo — but this script does not run
+# `bd init`, deliberately.
+#
+# `bd init` is not a small footprint: it creates .beads/ AND .agents/, .claude/,
+# .codex/, .cursor/, a .gitignore, and it APPENDS a beads block to CLAUDE.md and
+# AGENTS.md (non-destructively, inside markers — but it modifies them). In a repo
+# where CLAUDE.md is governed content, a setup script silently editing it is
+# exactly the surprise this harness exists to prevent. There is no flag to
+# suppress it. So: report, and let a human run it deliberately.
 BEADS_NOTE=""
 if command -v bd >/dev/null 2>&1; then
   if [ -d .beads ]; then
-    BEADS_NOTE="  .beads/ already present — leaving it alone."
+    BEADS_NOTE="  Task graph: .beads/ already present."
   else
-    if bd init >/dev/null 2>&1; then
-      BEADS_NOTE="  Initialized .beads/ (task graph). 'bd ready' answers what can be worked on now."
-    else
-      BEADS_NOTE="  'bd init' failed — run it by hand if you want the task graph here."
-    fi
+    BEADS_NOTE="  Task graph: none. \`bd init\` adds one — note it also appends a
+  beads block to CLAUDE.md/AGENTS.md and creates .claude/, .codex/, .cursor/,
+  .agents/. Run it yourself once you have seen that list."
   fi
 else
-  BEADS_NOTE="  bd (beads) not installed — skipped the task graph. 'brew install beads' to add one."
+  BEADS_NOTE="  Task graph: bd (beads) not installed. 'brew install beads' if you want one."
 fi
 
 cat <<EOF

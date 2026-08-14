@@ -12,6 +12,14 @@
 # Orchestration profile — <repo name>
 
 **Repo:** `<org/repo>` · **Default branch:** `<main>` · **Last verified:** `<YYYY-MM-DD>`
+**Harness schema:** 1
+
+<!-- Harness schema is how drift gets detected. harness-doctor.sh compares this
+     number to the current template's; when they differ it reports the gap at
+     the start of your next session in that repo. A template change becomes a
+     queue you drain naturally, not a migration across every repo. When a
+     section is added or renamed, bump it HERE and in the doctor's
+     CURRENT_SCHEMA. Never bump it by hand in a filled-in profile. -->
 
 > Re-verify before relying on this file. Stale profile entries are the known
 > failure mode — a gate command that no longer exists, or a "safe" action that
