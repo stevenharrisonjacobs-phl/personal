@@ -14,7 +14,12 @@
 # Lane NN — <lane name>
 
 **Program:** <program-slug> · **Branch:** `<branch>` · **Base:** `origin/<default-branch>` (must contain `<sha>`)
-**Kind:** workspace | subagent-fanout · **Depends on:** <lane ids, or "nothing">
+**Kind:** subagent (default) | workspace — <only if a blind seat or planned human
+iteration; say which, in one clause> | subagent-fanout
+**Depends on:** <lane ids, or "nothing">
+<!-- Workspace lanes: name the Conductor workspace after the lane slug, never a
+     default city name. -->
+
 
 ---
 
@@ -152,8 +157,11 @@ Also note any observation that changes the design of <downstream planned work>.
 
 ## 11. Finish
 
-Commit and push everything. **Do not leave decisions only in an ignored scratch
-directory** (`.context/` and the like) — it dies with the worktree.
+Commit and push everything. **The push is the handoff** — the orchestrator reads
+your branch from git; nothing you produce should ever travel by clipboard. Close
+with a three-line final message: branch, HEAD SHA, verdict. **Do not leave
+decisions only in an ignored scratch directory** (`.context/` and the like) — it
+dies with the worktree.
 
 Report honestly: what is done with evidence, what is blocked and on whom, what you
 deferred and why.

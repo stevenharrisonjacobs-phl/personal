@@ -40,10 +40,17 @@ lane to idle.
 A lane is a **path-scope** and a **judgment stream** at the same time. Both must
 hold, or the split is wrong.
 
-- One **workspace** per in-flight judgment stream — a lane that will need the
-  approver's ratification, a meaning call, or a risk decision *during* the build.
-- Everything agent-to-end with only a transactional approve/reject at a gate is
-  **subagent fan-out**, inside a workspace that already exists.
+- Every lane runs as a **background subagent of the orchestrator in an isolated
+  worktree** by default — including lanes with in-flight judgment. An approver
+  decision mid-build is an escalation on the bus followed by **resuming the same
+  subagent** with the decision; it is not a reason to hold a window open, and it
+  is never a reason for a human to carry messages (SKILL invariant 8).
+- A **workspace** is reserved for the two cases that earn one: a **blind seat**
+  (answerer/grader whose fresh context must be auditable — the run record cites
+  where it ran) and **planned human iteration** (the approver intends to drive
+  inside the lane). Record which of the two in the brief's Kind line.
+- Mechanical sweeps with no judgment stream and no lane ceremony are plain
+  **subagent fan-out** — no brief, no branch of their own, no handoff.
 - Give every lane a **phase split** so a blocked lane still has work: Phase A
   needs nothing; Phase B unblocks on an artifact condition the lane can check
   itself (a read-only inspection of the live system, a branch existing on origin);
@@ -66,7 +73,7 @@ it is subagent fan-out inside the orchestrator. Trying to run it beside the lane
 guarantees the merge you designed the split to avoid.
 
 The converse also holds: disjoint globs with **no** independent judgment stream is
-fan-out, not a lane. Do not spend a workspace on it.
+fan-out, not a lane. Do not spend lane ceremony on it.
 
 ### Sizing a lane
 
@@ -122,7 +129,12 @@ mechanics; see profile §2 for this repo's ladder.
 ## 4. Dispatch
 
 Write each `orchestration/<program>/lanes/NN-<lane>.md` from `templates/LANE.md`.
-**Commit them.** Then give the approver the pointer per lane:
+**Commit them.** The approver grants or withholds approvals by editing §4 of each
+lane file **before** dispatch — that is the human-authority insertion point; keep
+it there and keep it explicit. Then dispatch by lane kind.
+
+**Subagent lane (default).** Spawn a background subagent in an isolated
+worktree. Its entire prompt is the same four lines a human would have pasted:
 
 ```
 You are the worker for lane 02 of program <X> in <repo>.
@@ -131,13 +143,57 @@ Read orchestration/<X>/lanes/02-<lane>.md and follow it exactly.
 Granted approvals: A1 only. No others.
 ```
 
-The approver grants or withholds approvals by editing §4 of the lane file before
-sending the pointer. That is the human-authority insertion point — keep it there
-and keep it explicit.
+Completion returns to you automatically — no one has to notice. When a subagent
+lane escalates, it commits the escalation and ends its turn; after the decision
+is recorded on the bus, **resume the same subagent** with a pointer to the
+decision rather than re-dispatching from scratch.
+
+**Workspace lane (blind seat or planned iteration only).** Hand the approver the
+same four-line pointer to paste into the new workspace — and that paste is the
+last clipboard involvement the lane gets (SKILL invariant 8). Name the workspace
+after the lane slug (`gv3-03-preflight`), never a default city name: an archive
+audit found three unrelated efforts answering to the same reused city name.
+
+### Ready ≠ parallelizable — diff the write-scopes before you fan out
+
+**Unblocked says nothing about who writes what.** Before dispatching N ready
+items concurrently, diff their owned globs. Any overlap collapses them into
+**one worker on one branch**, however independent the tasks sound.
+
+This is invariant 2 applied at dispatch time, and it is easy to skip because the
+failure is silent. Three approved changes to one subsystem — a request-path
+predicate, a constant rename, an artifact field — read as three tasks and are
+one write-scope. Dispatched in parallel they produce **no merge conflict at
+all**: each touched different lines, so git merges all three cleanly into code
+that calls a constant the rename deleted. A textual merge cannot see a semantic
+collision. Only the pre-dispatch glob diff can.
+
+What genuinely parallelizes beside such a lane is work that writes **new files**
+— a DDL draft, a runbook, a design doc. Split those out; they cost nothing and
+they are usually the long pole anyway.
+
+**If the task registry is a graph tool rather than `lanes.json`** (Beads and its
+kin), note the gap: those tools carry `blocks`/`parent-child`/`related` edges
+but have **no edge for "writes the same paths."** `bd ready` will hand you a set
+that is dependency-clean and scope-colliding, with nothing on screen saying so.
+Carry the scope yourself — put the lane's globs in the issue's metadata at
+creation (`--metadata '{"owns":["path/**"],"forbids":["other/**"]}'`) and diff
+them across the ready set before fanning out. A dependency graph is not a
+write-scope map; do not let a green ready-queue substitute for one.
 
 ## 5. Verify — from git, never from claims
 
-The standing pattern:
+**And learn a lane finished from git or a notification — never from the
+approver.** Subagent lanes notify on completion. Workspace lanes are watched:
+
+```bash
+bash ~/.claude/skills/orchestrate/scripts/orch-watch.sh <program>   # fetch-poll: lane tip moved / handoff landed
+```
+
+The measured alternative was an 11-hour stall on a reviewer that had already
+finished, discovered only when the approver happened to check the window.
+
+The standing verification pattern:
 
 > fetch branch → **scope audit against owned globs** → clean-worktree gate
 > commands from profile §1 → permitted read-only checks against the live system

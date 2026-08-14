@@ -63,10 +63,24 @@ ORCHESTRATOR                                      LANE (worker)
 judgment stream; it touches something on the profile's irreversible list; it
 spans more than a day; more than one lane would edit the same shared file.
 
-**How many workspaces?** One per **in-flight judgment stream** — a lane that will
-need the approver's call *during* the build. Work that runs agent-to-end and
-needs only a transactional approve/reject at the end is **subagent fan-out inside
-an existing workspace**. Count judgment streams, not tasks.
+**How does each lane run?** Default: a **background subagent of the
+orchestrator, in its own isolated worktree.** It works the same brief, pushes the
+same lane branch, and its completion comes back as an automatic notification
+instead of a human noticing. Needing the approver's call *during* the build does
+**not** earn a workspace — mid-flight judgment travels the bus (escalation file
+→ decision record → resume the *same* subagent with the decision). A full
+Conductor workspace is earned by exactly two things:
+
+- a **blind seat** — an answerer or grader whose fresh context must be provable
+  and auditable (the run record cites *where* it ran);
+- **planned human iteration** — the approver expects to sit inside the lane and
+  drive. Decided when the brief is written, not by habit.
+
+This default was measured, not guessed: a three-week audit of real programs
+found workers received **one human message each** — fire-and-forget agents run
+by hand through ~100 clipboard relays, with double-paste incidents and an
+11-hour stall waiting on a finished reviewer nobody was told about. Count blind
+seats and planned-iteration lanes; everything else is subagents.
 
 **Where does the reviewer go?** It needs *independence*, not judgment: fresh
 context, a prompt it did not write, and nothing but git and the real system to
@@ -77,7 +91,7 @@ subagent of the lane it reviews.
 accumulates `decisions/` forever and must stay findable — set `standing: true`
 and keep `orchestration/CURRENT.md` pointing at the live orchestrator branch.
 
-## The seven invariants
+## The eight invariants
 
 Structure, not policy. Each is here because its absence cost something real.
 
@@ -89,7 +103,11 @@ Structure, not policy. Each is here because its absence cost something real.
 2. **One writer per path-scope.** Every lane declares owned globs and an explicit
    forbid list. Shared aggregators belong to the orchestrator and are resolved
    **exactly once**, centrally. Lanes request shared edits in their handoff.
-   → profile §3.
+   Enforce it **at dispatch**: diff the owned globs across everything you are
+   about to fan out, and collapse any overlap into one worker. Unblocked is not
+   the same as parallelizable, and the failure is silent — three edits to one
+   subsystem merge cleanly and still break, because a rename in one is invisible
+   to the textual merge of the others. → profile §3.
 
 3. **Nothing inherits authority.** Every action on the profile's irreversible
    list needs its own named, separately granted approval, pasted as an editable
@@ -117,6 +135,15 @@ Structure, not policy. Each is here because its absence cost something real.
    Cross-workspace references use repo paths and branch/PR numbers, never
    `../../../<workspace>/`, which breaks the moment a worktree is archived.
 
+8. **The clipboard is never the bus.** Workers push; the orchestrator fetches.
+   No worker output is relayed by pasting it into the orchestrator, and no
+   prompt reaches a worker as a pasted body (pointers only). The measured cost
+   of ignoring this: ~100 manual transfers in three weeks, two double-paste
+   incidents, an 11-hour stall on a finished worker, and an operator
+   hand-carrying 40-character commit SHAs between two windows attached to the
+   same git remote. The only message a human should ever need to carry is
+   "check lane NN" — and for subagent lanes, not even that.
+
 ## The bus — `orchestration/`
 
 ```
@@ -126,7 +153,8 @@ orchestration/
   CURRENT.md                       # active programs + their orchestrator branches
   <program>/
     PLAN.md                        # prose: goal, frozen contracts, waves, approvals
-    lanes.json                     # machine-readable lane registry (scripts read this)
+    lanes.json                     # machine-readable lane registry (scripts read this;
+                                   #   kind: subagent | workspace | subagent-fanout)
     lanes/NN-<lane>.md             # the worker brief — pointer-pasted, not pasted
     escalations/ESCALATION-<date>-<topic>.md
     decisions/DECISION-<date>-<topic>.md
@@ -141,6 +169,14 @@ git fetch origin && git checkout -b <branch> origin/<default>
 Read orchestration/<X>/lanes/02-<lane>.md and follow it exactly.
 Granted approvals: A1 only. No others.
 ```
+
+For a **subagent lane** (the default), those four lines are the subagent's whole
+prompt — background, isolated worktree, completion notifies automatically. For a
+**workspace lane**, the approver pastes them once, and that paste is the last
+time the clipboard is involved (invariant 8): from there the worker pushes and
+the orchestrator watches git (`orch-watch.sh`). Name a workspace lane after its
+lane slug, never a default city name — an archive audit found three unrelated
+efforts all answering to the same reused city name.
 
 A pasted prompt goes stale the moment the orchestrator revises it. A pointer
 never does.
@@ -176,6 +212,7 @@ Fill `PLAN.md` and `lanes.json`, write each `lanes/NN-*.md` from
 ```bash
 bash ~/.claude/skills/orchestrate/scripts/orch-status.sh <program-slug>
 bash ~/.claude/skills/orchestrate/scripts/orch-scope-audit.sh <program-slug> [lane-id]
+bash ~/.claude/skills/orchestrate/scripts/orch-watch.sh <program-slug>   # poll git for lane movement
 ```
 
 **Close out** — write `CLOSEOUT.md` from `templates/CLOSEOUT.md`, verify every lane branch is an ancestor of

@@ -79,8 +79,13 @@ the run and checkpoint so an interruption costs one slice, not the run.
 
 ## Hand back
 
-Commit `docs/HANDOFF-<date>-<lane>.md` from `templates/HANDOFF.md` on your branch,
-push, and tell the approver it is there. The orchestrator reads it from git.
+Commit `docs/HANDOFF-<date>-<lane>.md` from `templates/HANDOFF.md` on your branch
+and push. **The push is the handoff.** The orchestrator reads it from git (or,
+if you are a subagent lane, receives your completion directly). Close with a
+three-line final message — branch, HEAD SHA, verdict — and nothing that anyone
+would need to copy anywhere: a status report that needs a human to carry it is
+the process failing (SKILL invariant 8). Anything the orchestrator needs must be
+in the pushed handoff, not in your final message.
 
 The verdict — **SAFE TO INTEGRATE** / **NOT SAFE TO INTEGRATE** — is scoped.
 Follow it with a sentence naming everything it does *not* authorize. A real one:
