@@ -5,52 +5,69 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.categories` (
   category_kind STRING NOT NULL,
   description STRING,
   active BOOL NOT NULL,
-  created_at TIMESTAMP NOT NULL
+  created_at TIMESTAMP NOT NULL,
+  -- Orthogonal cost attributes. A category answers "what did I buy"; these answer
+  -- "how does it behave", which is what the cash-flow analyses actually slice on.
+  -- cost_behavior: fixed (obligation, same every month) | committed (recurring but
+  --   cancellable) | variable (flexes with behaviour). Drives the three-tier nut.
+  -- essential: could this stop within 30 days without material harm? Drives stress tests.
+  cost_behavior STRING,
+  essential BOOL
 );
+
+ALTER TABLE `__PROJECT_ID__.__GOLD_DATASET__.categories` ADD COLUMN IF NOT EXISTS cost_behavior STRING;
+ALTER TABLE `__PROJECT_ID__.__GOLD_DATASET__.categories` ADD COLUMN IF NOT EXISTS essential BOOL;
+-- cadence was the wrong grain: a category has no billing cadence, a charge does.
+-- Spreading is now explicit only (gold.amortization_schedule).
+ALTER TABLE `__PROJECT_ID__.__GOLD_DATASET__.categories` DROP COLUMN IF EXISTS cadence;
 
 MERGE `__PROJECT_ID__.__GOLD_DATASET__.categories` AS target
 USING UNNEST([
-  STRUCT('coffee' AS category_id, 'Coffee' AS category_name, 'Food & Drink' AS parent_category, 'expense' AS category_kind, 'Coffee shops and coffee purchases' AS description),
-  STRUCT('delivery', 'Delivery', 'Food & Drink', 'expense', 'Prepared-food delivery'),
-  STRUCT('groceries', 'Groceries', 'Food & Drink', 'expense', 'Groceries and household food'),
-  STRUCT('restaurants_bars', 'Restaurants & Bars', 'Food & Drink', 'expense', 'Restaurants, bars, and dining'),
-  STRUCT('clothes_grooming', 'Clothes & Grooming', 'Home, Health & Clothes', 'expense', 'Clothing, grooming, and personal care'),
-  STRUCT('fitness', 'Fitness', 'Home, Health & Clothes', 'expense', 'Gym, fitness, and exercise'),
-  STRUCT('healthcare', 'Healthcare', 'Home, Health & Clothes', 'expense', 'Medical, dental, and healthcare'),
-  STRUCT('home', 'Home', 'Home, Health & Clothes', 'expense', 'Household goods and everyday home spending'),
-  STRUCT('pets', 'Pets', 'Home, Health & Clothes', 'expense', 'Pet care and supplies'),
-  STRUCT('insurance', 'Insurance', 'Mortgage, Bills & School', 'expense', 'Insurance premiums and related costs'),
-  STRUCT('housing', 'Housing', 'Mortgage, Bills & School', 'expense', 'Rent, mortgage, and core housing costs'),
-  STRUCT('school', 'School', 'Mortgage, Bills & School', 'expense', 'School and tuition'),
-  STRUCT('utilities', 'Utilities', 'Mortgage, Bills & School', 'expense', 'Utilities and recurring household bills'),
-  STRUCT('babysitters', 'Babysitters', 'Recreation, Travel & Transit', 'expense', 'Babysitting and childcare'),
-  STRUCT('books_media', 'Books & Media', 'Recreation, Travel & Transit', 'expense', 'Books and purchased media'),
-  STRUCT('car', 'Car', 'Recreation, Travel & Transit', 'expense', 'Car ownership, maintenance, and fuel'),
-  STRUCT('media', 'Media & Entertainment', 'Recreation, Travel & Transit', 'expense', 'Streaming, entertainment, and media'),
-  STRUCT('recreation', 'Recreation', 'Recreation, Travel & Transit', 'expense', 'Recreation and leisure'),
-  STRUCT('transportation', 'Transportation', 'Recreation, Travel & Transit', 'expense', 'Public transit, rides, parking, and local transportation'),
-  STRUCT('travel_vacation', 'Travel & Vacation', 'Recreation, Travel & Transit', 'expense', 'Travel and vacations'),
-  STRUCT('donations', 'Donations', 'Holiday & Giving', 'expense', 'Charitable donations'),
-  STRUCT('gifts', 'Gifts', 'Holiday & Giving', 'expense', 'Gifts, birthdays, weddings, and celebrations'),
-  STRUCT('kids_recreation', 'Kids Recreation', 'Holiday & Giving', 'expense', 'Kids recreation and activities'),
-  STRUCT('holidays', 'Holidays', 'Holiday & Giving', 'expense', 'Holiday-specific spending'),
-  STRUCT('home_repair', 'Home Repair', 'Home Repair', 'expense', 'Repairs, renovations, and home projects'),
-  STRUCT('annual_subscriptions', 'Annual Subscriptions', 'Capital & Irregular', 'expense', 'Annual or irregular subscriptions'),
-  STRUCT('major_purchase', 'Major Purchase', 'Capital & Irregular', 'expense', 'Large one-time purchases'),
-  STRUCT('cash', 'Cash', 'Other', 'expense', 'Cash withdrawals and cash spending'),
-  STRUCT('education', 'Education', 'Other', 'expense', 'Education outside regular school costs'),
-  STRUCT('fees', 'Fees', 'Other', 'expense', 'Bank and service fees'),
-  STRUCT('taxes', 'Taxes', 'Other', 'expense', 'Taxes and tax payments'),
-  STRUCT('work_expenses', 'Work Expenses', 'Other', 'expense', 'Work-related expenses'),
-  STRUCT('unclassified', 'Unclassified', 'Other', 'expense', 'Not yet classified'),
-  STRUCT('paycheck', 'Paycheck', 'Income', 'income', 'Employment income'),
-  STRUCT('interest_income', 'Interest Income', 'Income', 'income', 'Interest income'),
-  STRUCT('other_income', 'Other Income', 'Income', 'income', 'Other income'),
-  STRUCT('refund', 'Refund', 'Income', 'income', 'Refunds and reimbursements'),
-  STRUCT('internal_transfer', 'Internal Transfer', 'Transfers', 'transfer', 'Transfers between owned accounts'),
-  STRUCT('credit_card_payment', 'Credit Card Payment', 'Transfers', 'transfer', 'Credit-card payments'),
-  STRUCT('loan_repayment', 'Loan Repayment', 'Transfers', 'transfer', 'Loan principal payments'),
-  STRUCT('investment_activity', 'Investment Activity', 'Transfers', 'transfer', 'Investment purchases, sales, and sweeps')
+  STRUCT('coffee' AS category_id, 'Coffee' AS category_name, 'Food & Drink' AS parent_category, 'expense' AS category_kind, 'Coffee shops and coffee purchases' AS description, TRUE AS is_active, 'variable' AS cost_behavior, FALSE AS essential),
+  STRUCT('delivery', 'Delivery', 'Food & Drink', 'expense', 'Prepared-food delivery (Uber Eats, DoorDash, Gopuff)', TRUE, 'variable', FALSE),
+  STRUCT('groceries', 'Groceries', 'Food & Drink', 'expense', 'Groceries, household food, and retail alcohol', TRUE, 'variable', TRUE),
+  STRUCT('restaurants_bars', 'Restaurants & Bars', 'Food & Drink', 'expense', 'Restaurants, bars, and dining out', TRUE, 'variable', FALSE),
+  STRUCT('clothes_grooming', 'Clothes & Grooming', 'Home, Health & Clothes', 'expense', 'Clothing, salon, spa, nails, and personal care', TRUE, 'variable', FALSE),
+  STRUCT('fitness', 'Fitness', 'Home, Health & Clothes', 'expense', 'Gym, fitness, and exercise (adults)', TRUE, 'committed', FALSE),
+  STRUCT('healthcare', 'Healthcare', 'Home, Health & Clothes', 'expense', 'Medical, dental, and pharmacy', TRUE, 'variable', TRUE),
+  STRUCT('home', 'Home', 'Home, Health & Clothes', 'expense', 'Household goods, furnishings, and everyday home spending', TRUE, 'variable', FALSE),
+  STRUCT('pets', 'Pets', 'Home, Health & Clothes', 'expense', 'Pet care and supplies', TRUE, 'variable', TRUE),
+  STRUCT('insurance', 'Insurance', 'Mortgage, Bills & School', 'expense', 'Insurance premiums and related costs', TRUE, 'fixed', TRUE),
+  STRUCT('housing', 'Housing', 'Mortgage, Bills & School', 'expense', 'Rent, mortgage, and core housing costs', TRUE, 'fixed', TRUE),
+  STRUCT('school', 'School', 'Mortgage, Bills & School', 'expense', 'Tuition and after-school programs (aftercare, enrichment)', TRUE, 'committed', TRUE),
+  STRUCT('childcare', 'Childcare', 'Mortgage, Bills & School', 'expense', 'Preschool, daycare, and camp', TRUE, 'fixed', TRUE),
+  STRUCT('utilities', 'Utilities', 'Mortgage, Bills & School', 'expense', 'Utilities and recurring household bills', TRUE, 'fixed', TRUE),
+  STRUCT('babysitters', 'Babysitters', 'Recreation, Travel & Transit', 'expense', 'Occasional evening and weekend sitters', TRUE, 'variable', FALSE),
+  STRUCT('car', 'Car', 'Recreation, Travel & Transit', 'expense', 'Vehicle ownership: repair, registration, wash', TRUE, 'variable', TRUE),
+  STRUCT('media', 'Media & Entertainment', 'Recreation, Travel & Transit', 'expense', 'Streaming, press, events, and entertainment', TRUE, 'committed', FALSE),
+  STRUCT('recreation', 'Recreation', 'Recreation, Travel & Transit', 'expense', 'Recreation and leisure (adults)', TRUE, 'variable', FALSE),
+  STRUCT('transportation', 'Transportation', 'Recreation, Travel & Transit', 'expense', 'Getting around: fuel, transit, rideshare, parking', TRUE, 'variable', TRUE),
+  STRUCT('travel_vacation', 'Travel & Vacation', 'Recreation, Travel & Transit', 'expense', 'Travel, hotels, and vacations', TRUE, 'variable', FALSE),
+  STRUCT('kids_recreation', 'Kids Recreation', 'Recreation, Travel & Transit', 'expense', 'Optional kids activities and outings', TRUE, 'variable', FALSE),
+  STRUCT('donations', 'Donations', 'Holiday & Giving', 'expense', 'Charitable donations', TRUE, 'committed', FALSE),
+  STRUCT('gifts', 'Gifts', 'Holiday & Giving', 'expense', 'Gifts, birthdays, weddings, and celebrations', TRUE, 'variable', FALSE),
+  STRUCT('home_repair', 'Home Repair', 'Home Repair', 'expense', 'Capital, non-recurring repairs and renovation projects', TRUE, 'variable', FALSE),
+  STRUCT('home_services', 'Home Services', 'Home Repair', 'expense', 'Recurring household services: cleaning, pest control', TRUE, 'committed', FALSE),
+  STRUCT('education', 'Education', 'Other', 'expense', 'Adult education and courses', TRUE, 'committed', FALSE),
+  STRUCT('fees', 'Fees', 'Other', 'expense', 'Bank, card, and service fees', TRUE, 'variable', FALSE),
+  STRUCT('taxes', 'Taxes', 'Other', 'expense', 'Taxes and estimated tax payments', TRUE, 'fixed', TRUE),
+  STRUCT('work_expenses', 'Work Expenses', 'Other', 'expense', 'Business software, subscriptions, and work costs (tax lookback)', TRUE, 'committed', TRUE),
+  STRUCT('unclassified', 'Unclassified', 'Other', 'expense', 'Not yet classified', TRUE, 'variable', FALSE),
+  -- Retired: these encode how or how much you paid, not what you bought. Spreading is
+  -- explicit (gold.amortization_schedule); size and instrument live on the transaction.
+  STRUCT('annual_subscriptions', 'Annual Subscriptions', 'Capital & Irregular', 'expense', 'RETIRED - a payment cadence, not a category', FALSE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('major_purchase', 'Major Purchase', 'Capital & Irregular', 'expense', 'RETIRED - size, not a category', FALSE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('cash', 'Cash', 'Other', 'expense', 'RETIRED - payment instrument, not a category', FALSE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('books_media', 'Books & Media', 'Recreation, Travel & Transit', 'expense', 'RETIRED - merged into Media & Entertainment', FALSE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('holidays', 'Holidays', 'Holiday & Giving', 'expense', 'RETIRED - unused; use Gifts', FALSE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('paycheck', 'Paycheck', 'Income', 'income', 'Employment income', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('interest_income', 'Interest Income', 'Income', 'income', 'Interest income', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('other_income', 'Other Income', 'Income', 'income', 'Other income', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('refund', 'Refund', 'Income', 'income', 'Refunds and reimbursements', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('internal_transfer', 'Internal Transfer', 'Transfers', 'transfer', 'Transfers between owned accounts', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('credit_card_payment', 'Credit Card Payment', 'Transfers', 'transfer', 'Credit-card payments', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('loan_repayment', 'Loan Repayment', 'Transfers', 'transfer', 'Loan principal payments', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL)),
+  STRUCT('investment_activity', 'Investment Activity', 'Transfers', 'transfer', 'Investment purchases, sales, and sweeps', TRUE, CAST(NULL AS STRING), CAST(NULL AS BOOL))
 ]) AS seed
 ON target.category_id = seed.category_id
 WHEN MATCHED THEN UPDATE SET
@@ -58,10 +75,12 @@ WHEN MATCHED THEN UPDATE SET
   parent_category = seed.parent_category,
   category_kind = seed.category_kind,
   description = seed.description,
-  active = TRUE
+  active = seed.is_active,
+  cost_behavior = seed.cost_behavior,
+  essential = seed.essential
 WHEN NOT MATCHED THEN
-  INSERT (category_id, category_name, parent_category, category_kind, description, active, created_at)
-  VALUES (seed.category_id, seed.category_name, seed.parent_category, seed.category_kind, seed.description, TRUE, CURRENT_TIMESTAMP());
+  INSERT (category_id, category_name, parent_category, category_kind, description, active, created_at, cost_behavior, essential)
+  VALUES (seed.category_id, seed.category_name, seed.parent_category, seed.category_kind, seed.description, seed.is_active, CURRENT_TIMESTAMP(), seed.cost_behavior, seed.essential);
 
 CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` (
   source_system STRING NOT NULL,

@@ -31,6 +31,34 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.vendor_aliases` (
   created_at TIMESTAMP NOT NULL
 );
 
+-- Vendor -> category lookup. Once a merchant resolves to a canonical vendor_name,
+-- its category is pinned here and wins over the noisy per-transaction upstream
+-- category (Copilot/Tiller), so the same merchant can never be categorized two
+-- different ways. category_id references gold.categories.
+CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map` (
+  vendor_name STRING NOT NULL,
+  category_id STRING NOT NULL,
+  notes STRING,
+  enabled BOOL NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+
+-- Explicit amortization schedules. A capital purchase hits the accounts on one
+-- day but is *used* over a span; this spreads its cost across start_date..end_date
+-- in gold.v_spending_amortized. Target exactly one of transaction_key (a single
+-- charge) or epic_name (a multi-charge project). Managed by the /amortize skill.
+CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__GOLD_DATASET__.amortization_schedule` (
+  amortization_id STRING NOT NULL,
+  transaction_key STRING,
+  epic_name STRING,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  label STRING,
+  notes STRING,
+  enabled BOOL NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+
 MERGE `__PROJECT_ID__.__GOLD_DATASET__.vendor_aliases` AS target
 USING UNNEST([
   STRUCT('amazon' AS alias_key, 'Amazon' AS alias_name, 'Amazon' AS canonical_vendor_name),
@@ -98,6 +126,10 @@ USING UNNEST([
   STRUCT('starz', 20, r'(?i)\bstarz\b', 'Starz'),
   STRUCT('sunoco', 20, r'(?i)\bsunoco\b', 'Sunoco'),
   STRUCT('sweetgreen', 20, r'(?i)\bsweetgreen\b', 'Sweetgreen'),
+  -- Priority 5 so it beats the generic 'target' rule below: 'Vanguard Target
+  -- Retirement <year>' is a 401k fund in the Justworks account, not a Target store.
+  -- RE2 has no lookbehind, so precedence does the disambiguation.
+  STRUCT('vanguard-target-retirement', 5, r'(?i)vanguard target retirement', 'Vanguard'),
   STRUCT('target', 20, r'(?i)\btarget\b', 'Target'),
   STRUCT('the-igloo', 20, r'(?i)\bthe igloo\b', 'The Igloo'),
   STRUCT('the-sidecar-bar', 20, r'(?i)\bthe sidecar bar', 'The Sidecar Bar & Grille'),
@@ -136,7 +168,65 @@ USING UNNEST([
   STRUCT('ventra', 30, r'(?i)\bventra account\b', 'Ventra'),
   STRUCT('vybe-urgent-care', 30, r'(?i)\bvybe urgent care\b', 'vybe urgent care'),
   STRUCT('wall-street-journal', 30, r'(?i)\bwsj\b', 'The Wall Street Journal'),
-  STRUCT('zapier', 30, r'(?i)\bzapier\b', 'Zapier')
+  STRUCT('zapier', 30, r'(?i)\bzapier\b', 'Zapier'),
+  STRUCT('tall-pines-day-camp', 30, r'(?i)tall pines', 'Tall Pines Day Camp'),
+  STRUCT('beacon-preschool', 30, r'(?i)brghtwhl\W*beacon|beacon\W+brghtwhl', 'Beacon Preschool'),
+  -- Uber is two businesses under one brand: split by descriptor so each can carry
+  -- its own category. Priority 5 beats the generic 'uber' rule at 10.
+  STRUCT('uber-eats', 5, r'(?i)uber\W*eats', 'Uber Eats'),
+  STRUCT('uber-one', 5, r'(?i)uber one', 'Uber One'),
+  -- Housecleaner, billed under three different names plus bare Venmo transfers.
+  STRUCT('limas-cleaning', 10, r'(?i)aricelma lima|limas cleaning|evelindo limas', "Lima's Cleaning"),
+  -- Dry cleaners - distinct from housecleaning above.
+  STRUCT('rims-cleaners', 20, r'(?i)rims cleaners', 'Rims Cleaners'),
+  STRUCT('kims-cleaners', 20, r"(?i)kim's cleaners", 'Kims Cleaners'),
+  -- Same Maine general store, two description spellings.
+  STRUCT('burnt-cove-market', 20, r'(?i)burnt cove', 'Burnt Cove Market'),
+  STRUCT('yous-life', 20, r'(?i)yous\W*life', 'Yous Life'),
+  STRUCT('coco-academy', 20, r'(?i)cocoacademy|coco academy', 'Coco Academy'),
+  STRUCT('anna-and-bel', 20, r'(?i)ms\W*annabel|anna & bel', 'Anna & Bel'),
+  STRUCT('bobby-mack', 20, r'(?i)bobby mack', 'Bobby Mack & Co. Hair Studio'),
+  STRUCT('heyday-skincare', 20, r'(?i)blvd\W*heyday|heyday rittenhous', 'Heyday Skincare'),
+  STRUCT('phs-pop-up-garden', 20, r'(?i)phs pop up garden', 'PHS Pop Up Garden'),
+  STRUCT('martial-posture-2', 20, r'(?i)martial posture', 'Martial Posture'),
+  STRUCT('phils-excellent-auto', 20, r'(?i)phil\W?s excellent aut', "Phil's Excellent Auto"),
+  STRUCT('penndot', 20, r'(?i)pa driver & vehicle', 'PennDOT'),
+  STRUCT('fine-wine-good-spirits', 20, r'(?i)fine wine & good spirits', 'Fine Wine & Good Spirits'),
+  STRUCT('whisky-cellar', 20, r'(?i)whisky cellar', 'The Whisky Cellar'),
+  STRUCT('market-street-ritten', 20, r'(?i)market street\W*ritten', 'Market Street Ritten'),
+  STRUCT('anta-scotland', 20, r'(?i)anta scotland', 'ANTA Scotland'),
+  STRUCT('clic-tribeca', 20, r'(?i)clic tribeca', 'Clic'),
+  STRUCT('pottery-barn-kids-2', 20, r'(?i)potterybarnkids|pottery barn kids', 'Pottery Barn Kids'),
+  STRUCT('mfg-fuel', 20, r'(?i)\bmfg kessock\b', 'MFG Kessock'),
+  STRUCT('sixt-rental', 20, r'(?i)\bsixt\b', 'Sixt'),
+  STRUCT('langsmith', 20, r'(?i)langchain|langsmith', 'LangChain'),
+  STRUCT('preschool-smiles', 20, r'(?i)preschool smiles', 'Preschool Smiles'),
+  STRUCT('evolve-dance', 20, r'(?i)evolve dance', 'Evolve Dance'),
+  STRUCT('generation-3-electric', 20, r'(?i)generation 3', 'Generation 3 Electric'),
+  -- Card annual/renewal fees arrive with generic descriptions and no merchant.
+  STRUCT('card-membership-fee', 20, r'(?i)(annual|renewal)? ?membership fee', 'Card Membership Fee'),
+  STRUCT('vagaro-hair', 20, r'(?i)vagaro', 'Vagaro Hair Studio'),
+  STRUCT('prezi', 20, r'(?i)\bprezi\b', 'Prezi'),
+  STRUCT('intuit', 20, r'(?i)\bintuit\b', 'Intuit'),
+  STRUCT('formswift', 20, r'(?i)formswift', 'FormSwift'),
+  STRUCT('suki-smith', 20, r'(?i)suki smith', 'Suki Smith'),
+  STRUCT('poison-heart', 20, r'(?i)poison heart', 'Poison Heart'),
+  STRUCT('windy-city-smokeout', 20, r'(?i)windy city\W*smokeout', 'Windy City Smokeout'),
+  STRUCT('hatland', 20, r'(?i)hatland', 'Hatland'),
+  STRUCT('heanssler-oil', 20, r'(?i)heanssler oil', 'Heanssler Oil Co'),
+  STRUCT('r5-productions', 20, r'(?i)r5 productions', 'R5 Productions'),
+  STRUCT('circle-k', 20, r'(?i)\bcircle k\b', 'Circle K'),
+  STRUCT('south-bowl', 20, r'(?i)south bowl', 'South Bowl'),
+  STRUCT('union-transfer', 20, r'(?i)union transfer', 'Union Transfer'),
+  STRUCT('hands-on-the-earth', 20, r'(?i)hands on the earth', 'Hands On The Earth'),
+  STRUCT('ag-travel-plaza', 20, r'(?i)ag travel plaza', 'Ag Travel Plaza'),
+  STRUCT('ls-cook', 20, r'(?i)\bls cook\b', 'Ls Cook'),
+  STRUCT('american-girl', 20, r'(?i)americangirl|american girl', 'American Girl'),
+  STRUCT('ancestry', 20, r'(?i)\bancestry\b', 'Ancestry'),
+  STRUCT('nail-aug', 20, r'(?i)nail aug', 'Nail Aug'),
+  STRUCT('monarch-money', 20, r'(?i)monarch money', 'Monarch Money'),
+  STRUCT('halloween-costumes', 20, r'(?i)halloweencostumes', 'HalloweenCostumes'),
+  STRUCT('corner-on-the-square', 20, r'(?i)corner on the square', 'Corner On The Square')
 ]) AS seed
 ON target.rule_id = seed.rule_id
 WHEN MATCHED AND target.notes = 'Seeded deterministic vendor rule' THEN
@@ -147,6 +237,122 @@ WHEN MATCHED AND target.notes = 'Seeded deterministic vendor rule' THEN
 WHEN NOT MATCHED THEN
   INSERT (rule_id, priority, description_regex, vendor_name, notes, enabled, created_at)
   VALUES (seed.rule_id, seed.priority, seed.description_regex, seed.vendor_name, 'Seeded deterministic vendor rule', TRUE, CURRENT_TIMESTAMP());
+
+MERGE `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map` AS target
+USING UNNEST([
+  -- Childcare: preschool and camp (fixed obligation)
+  STRUCT('Tall Pines Day Camp' AS vendor_name, 'childcare' AS category_id),
+  STRUCT('Beacon Preschool', 'childcare'),
+  -- School: after-school programs / aftercare (committed, school-year)
+  STRUCT('Yous Life', 'school'),
+  STRUCT('Martial Posture', 'school'),
+  STRUCT('Coco Academy', 'school'),
+  -- Babysitters: occasional sitters (variable)
+  STRUCT('Choice Sitter Solutions', 'babysitters'),
+  STRUCT('Ana Mora Sitter', 'babysitters'),
+  STRUCT('Saoirse Hyland Sitting', 'babysitters'),
+  STRUCT('Una Mcquaile Sitting And Cats', 'babysitters'),
+  STRUCT('Abby Kring Sitting', 'babysitters'),
+  STRUCT('Margaux Miller Sitting', 'babysitters'),
+  -- Kids Recreation: optional activities
+  STRUCT('Evolve Dance', 'kids_recreation'),
+  STRUCT('Kids Empire', 'kids_recreation'),
+  -- Home / household goods
+  STRUCT('Amazon', 'home'),
+  STRUCT('ANTA Scotland', 'home'),
+  STRUCT('Pottery Barn Kids', 'home'),
+  STRUCT('Best Buy Marketplace', 'home'),
+  -- Home Services: recurring household services
+  STRUCT("Lima's Cleaning", 'home_services'),
+  STRUCT('Venmo', 'home_services'),
+  STRUCT('Orkin', 'home_services'),
+  -- Delivery
+  STRUCT('Uber Eats', 'delivery'),
+  STRUCT('DoorDash', 'delivery'),
+  STRUCT('Gopuff', 'delivery'),
+  STRUCT('Uber One', 'delivery'),
+  -- Transportation vs Car
+  STRUCT('Uber', 'transportation'),
+  STRUCT('MFG Kessock', 'transportation'),
+  STRUCT('Philadelphia Parking Authority', 'transportation'),
+  STRUCT("Phil's Excellent Auto", 'car'),
+  STRUCT('PennDOT', 'car'),
+  -- Coffee
+  STRUCT('Starbucks', 'coffee'),
+  STRUCT('Ultimo Coffee', 'coffee'),
+  STRUCT('Rival Bros Coffee', 'coffee'),
+  STRUCT('La Colombe', 'coffee'),
+  STRUCT('Elixr Coffee', 'coffee'),
+  STRUCT("Dunkin'", 'coffee'),
+  -- Groceries (incl. retail alcohol)
+  STRUCT('Di Bruno Bros.', 'groceries'),
+  STRUCT('Burnt Cove Market', 'groceries'),
+  STRUCT('Fine Wine & Good Spirits', 'groceries'),
+  STRUCT('The Whisky Cellar', 'groceries'),
+  -- Clothes & Grooming (incl. salon/spa/dry cleaning)
+  STRUCT('Bobby Mack & Co. Hair Studio', 'clothes_grooming'),
+  STRUCT('Pink Nails & Spa', 'clothes_grooming'),
+  STRUCT('Heyday Skincare', 'clothes_grooming'),
+  STRUCT('Rims Cleaners', 'clothes_grooming'),
+  STRUCT('Kims Cleaners', 'clothes_grooming'),
+  STRUCT('Clic', 'clothes_grooming'),
+  STRUCT('Market Street Ritten', 'clothes_grooming'),
+  STRUCT('Target', 'clothes_grooming'),
+  -- Media & Entertainment
+  STRUCT('Audible', 'media'),
+  STRUCT('The New York Times', 'media'),
+  STRUCT('Hudson News', 'media'),
+  -- Restaurants & Bars
+  STRUCT('PHS Pop Up Garden', 'restaurants_bars'),
+  -- Travel
+  STRUCT('Anna & Bel', 'travel_vacation'),
+  STRUCT('Sixt', 'travel_vacation'),
+  -- Work Expenses (software; kept as the tax-lookback bucket)
+  STRUCT('LangChain', 'work_expenses'),
+  STRUCT('Google One', 'work_expenses'),
+  STRUCT('OpenAI', 'work_expenses'),
+  STRUCT('Webflow', 'work_expenses'),
+  STRUCT('Snowflake Computing', 'work_expenses'),
+  STRUCT('Notion Labs', 'work_expenses'),
+  STRUCT('Vercel', 'work_expenses'),
+  -- Healthcare
+  STRUCT('Preschool Smiles', 'healthcare'),
+  -- Home Repair (capital projects)
+  STRUCT('The Davey Tree Expert', 'home_repair'),
+  STRUCT('Generation 3 Electric', 'home_repair'),
+  -- Remaining split-vendor resolutions
+  STRUCT('Suki Smith', 'recreation'),
+  STRUCT('Poison Heart', 'restaurants_bars'),
+  STRUCT('Windy City Smokeout', 'media'),
+  STRUCT('R5 Productions', 'media'),
+  STRUCT('Union Transfer', 'media'),
+  STRUCT('South Bowl', 'recreation'),
+  STRUCT('Hatland', 'clothes_grooming'),
+  STRUCT('Ls Cook', 'clothes_grooming'),
+  STRUCT('Heanssler Oil Co', 'utilities'),
+  STRUCT('Circle K', 'transportation'),
+  STRUCT('Ag Travel Plaza', 'transportation'),
+  STRUCT('Hands On The Earth', 'gifts'),
+  -- Remaining Unclassified resolutions
+  STRUCT('Card Membership Fee', 'fees'),
+  STRUCT('Vagaro Hair Studio', 'clothes_grooming'),
+  STRUCT('Replit', 'work_expenses'),
+  STRUCT('Prezi', 'work_expenses'),
+  STRUCT('Intuit', 'work_expenses'),
+  STRUCT('FormSwift', 'work_expenses'),
+  STRUCT('American Girl', 'gifts'),
+  STRUCT('Ancestry', 'media'),
+  STRUCT('Nail Aug', 'clothes_grooming'),
+  STRUCT('Monarch Money', 'fees'),
+  STRUCT('HalloweenCostumes', 'clothes_grooming'),
+  STRUCT('Corner On The Square', 'restaurants_bars')
+]) AS seed
+ON target.vendor_name = seed.vendor_name
+WHEN MATCHED AND target.notes = 'Seeded vendor category map' THEN
+  UPDATE SET category_id = seed.category_id
+WHEN NOT MATCHED THEN
+  INSERT (vendor_name, category_id, notes, enabled, created_at)
+  VALUES (seed.vendor_name, seed.category_id, 'Seeded vendor category map', TRUE, CURRENT_TIMESTAMP());
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transactions_base` AS
 WITH deduplicated AS (
@@ -253,10 +459,13 @@ WITH deduplicated AS (
 ), category_resolved AS (
   SELECT
     v.*,
-    c.category_id,
-    c.category_name AS canonical_category,
-    c.parent_category,
-    c.category_kind
+    -- Vendor category map wins over the per-transaction upstream category, so a
+    -- given merchant is always in one category. Falls back to the upstream-derived
+    -- category when the vendor isn't mapped.
+    COALESCE(mc.category_id, c.category_id) AS category_id,
+    COALESCE(mc.category_name, c.category_name) AS canonical_category,
+    COALESCE(mc.parent_category, c.parent_category) AS parent_category,
+    COALESCE(mc.category_kind, c.category_kind) AS category_kind
   FROM vendor_resolved AS v
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` AS a
     ON a.active
@@ -276,6 +485,12 @@ WITH deduplicated AS (
        AND REGEXP_REPLACE(LOWER(c.category_name), r'[^a-z0-9]+', '') = REGEXP_REPLACE(LOWER(COALESCE(v.category, '')), r'[^a-z0-9]+', '')
      )
    )
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map` AS m
+    ON m.enabled
+   AND m.vendor_name = v.vendor_name
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS mc
+    ON mc.active
+   AND mc.category_id = m.category_id
 ), epic_resolved AS (
   SELECT
     c.*,
@@ -778,3 +993,71 @@ SELECT
   t.account_key IS NOT NULL AS has_transactions
 FROM balance_accounts AS b
 FULL OUTER JOIN transaction_accounts AS t USING (account_key);
+
+-- Spending with lumpy costs spread over the period they cover. One transaction
+-- becomes N monthly slices; SUM(amortized_amount) == SUM(spend_amount) always.
+--
+-- Span precedence (first match wins):
+--   1. amortization_schedule on the transaction   -- explicit, /amortize skill
+--   2. amortization_schedule on the transaction's epic
+--   3. everything else -> 1 (pass through)
+--
+-- Spreading is deliberately explicit. An earlier version derived a span from a
+-- per-category cadence, but a category has no billing cadence -- "Fitness" holds
+-- $3,600 annual dues, a monthly Peloton bill and $4 drop-in charges. It smeared
+-- 133 sub-$100 transactions across 12 months each. Recurring tax liability is
+-- handled properly by finance.accruals instead.
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.v_spending_amortized` AS
+WITH sched AS (
+  SELECT * EXCEPT(rn) FROM (
+    SELECT s.*, ROW_NUMBER() OVER (
+      PARTITION BY COALESCE(s.transaction_key, s.epic_name) ORDER BY s.created_at DESC
+    ) AS rn
+    FROM `__PROJECT_ID__.__GOLD_DATASET__.amortization_schedule` AS s
+    WHERE s.enabled
+  ) WHERE rn = 1
+), base AS (
+  SELECT
+    t.transaction_key,
+    t.transaction_date,
+    t.spend_amount,
+    t.canonical_category,
+    t.vendor_name,
+    t.epic_name,
+    c.cost_behavior,
+    c.essential,
+    COALESCE(st.start_date, se.start_date, t.transaction_date) AS span_start,
+    COALESCE(
+      -- explicit schedule: inclusive month count between start and end
+      DATE_DIFF(DATE_TRUNC(COALESCE(st.end_date, se.end_date), MONTH),
+                DATE_TRUNC(COALESCE(st.start_date, se.start_date), MONTH), MONTH) + 1,
+      1
+    ) AS span_months,
+    CASE
+      WHEN st.amortization_id IS NOT NULL THEN 'schedule:transaction'
+      WHEN se.amortization_id IS NOT NULL THEN 'schedule:epic'
+      ELSE 'none'
+    END AS amortization_source
+  FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS t
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS c
+    ON c.category_name = t.canonical_category AND c.active
+  LEFT JOIN sched AS st ON st.transaction_key = t.transaction_key
+  LEFT JOIN sched AS se ON se.epic_name = t.epic_name AND se.transaction_key IS NULL
+  WHERE t.flow_type = 'expense' AND t.spend_amount > 0
+)
+SELECT
+  transaction_key,
+  DATE_ADD(DATE_TRUNC(span_start, MONTH), INTERVAL offset_month MONTH) AS amortized_month,
+  -- deliberately unrounded: rounding per-slice breaks the conservation invariant
+  -- (SUM(amortized_amount) == SUM(spend_amount)). Round at the point of display.
+  spend_amount / span_months AS amortized_amount,
+  spend_amount AS original_amount,
+  transaction_date AS original_date,
+  span_months,
+  amortization_source,
+  canonical_category,
+  cost_behavior,
+  essential,
+  vendor_name,
+  epic_name
+FROM base, UNNEST(GENERATE_ARRAY(0, span_months - 1)) AS offset_month;
