@@ -216,8 +216,12 @@ candidate)
 probe)
   # Prefer the candidate tag; on a first deploy there is no candidate, so fall
   # back to the service's own URL rather than reporting a missing deploy.
+  # `|| true` is load-bearing: with no candidate tag, grep exits 1, and under
+  # `set -e` with pipefail that aborts the whole script inside the command
+  # substitution — before the fallback below can run. The symptom is a probe
+  # that prints nothing and exits 1, which looks exactly like a dead service.
   url=$(gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
-        --format='value(status.traffic.url)' 2>/dev/null | tr ' ' '\n' | grep candidate | head -1)
+        --format='value(status.traffic.url)' 2>/dev/null | tr ' ' '\n' | grep candidate | head -1 || true)
   if [ -z "$url" ]; then
     url=$(gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
           --format='value(status.url)' 2>/dev/null)
