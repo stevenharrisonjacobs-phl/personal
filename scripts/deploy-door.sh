@@ -104,6 +104,21 @@ bootstrap)
     echo "  granted $role"
   done
 
+  # Cloud Build runs as the COMPUTE default service account, not the legacy
+  # @cloudbuild.gserviceaccount.com one, and on a project that has never built
+  # anything it holds no roles at all. The failure is a 403 on the staging
+  # BUCKET ("does not have storage.objects.get"), which reads like a Cloud
+  # Storage problem rather than a missing build identity. builds.builder bundles
+  # the three it needs: staging-bucket access, Artifact Registry write, and log
+  # write (required because cloudbuild.yaml sets CLOUD_LOGGING_ONLY).
+  project_number=$(gc projects describe "$PROJECT" --format='value(projectNumber)')
+  build_sa="${project_number}-compute@developer.gserviceaccount.com"
+  gc projects add-iam-policy-binding "$PROJECT" \
+    --member "serviceAccount:$build_sa" --role roles/cloudbuild.builds.builder \
+    --condition=None >/dev/null \
+    || { echo "FAILED to grant the build SA — re-run bootstrap." >&2; exit 1; }
+  echo "  granted roles/cloudbuild.builds.builder to $build_sa"
+
   echo
   echo "Bootstrap done. Next: $0 secrets"
   ;;
@@ -155,6 +170,16 @@ build)
   ;;
 
 candidate)
+  # IMAGE is tagged with the current HEAD sha, so committing between `build` and
+  # `candidate` silently retargets this at an image that was never built. Cloud
+  # Run's own error for that is a generic manifest-not-found, so check here and
+  # say the actual remedy.
+  if ! gc artifacts docker images describe "$IMAGE" --project "$PROJECT" >/dev/null 2>&1; then
+    echo "No image at $IMAGE" >&2
+    echo "HEAD moved since the last build. Run: $0 build" >&2
+    exit 1
+  fi
+
   # --no-invoker-iam-check keeps the URL publicly reachable (claude.ai must
   # reach it) while the door's own OAuth + allowlist remain the perimeter.
   gc run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
