@@ -82,8 +82,23 @@ is always net-new.
 - **Never match transactions on the card mask.** Masks diverge between Tiller
   and Copilot. Match on absolute amount + date (±4 days) + normalized
   `account_name` — see `docs/runbooks/source-reconciliation.md`.
-- **Category labels are source-specific.** Join through `gold.category_aliases`
-  to reach the canonical typology rather than trusting a raw `source_category`.
+- **Use `canonical_category`, not `category`.** `gold.transactions` carries
+  both. `category` is the source-system label, so Tiller's "Restaurants" and
+  Copilot's "Restaurants & Bars" stay as two separate buckets and any single
+  answer silently misses one of them. `canonical_category` (with
+  `parent_category` above it, e.g. Food & Drink) is the durable typology that
+  merges them and splits out Delivery and Coffee properly.
+
+  Measured on July 2026 dining: the raw column gives "Restaurants $2,057.69 /
+  53 txns" plus a separate "Restaurants & Bars $810.28 / 17"; the canonical
+  column gives "Restaurants & Bars $2,100.68 / 45, Delivery $584.09 / 11,
+  Coffee $229.27 / 16". Same underlying money, and only the second one answers
+  the question a person actually asked. Even Groceries differs — $1,522.07 / 34
+  raw vs $1,662.13 / 35 canonical.
+
+- `finance.v_spending.category` is likewise the raw label. It is fine for a
+  quick total, but for anything category-shaped prefer `gold.transactions` with
+  `canonical_category`. `gold.category_aliases` is the mapping behind it.
 - **Amortized and real-cash spending must never be summed together.** They are
   two views of the same money; adding them double-counts the commitment in the
   month it is actually paid.

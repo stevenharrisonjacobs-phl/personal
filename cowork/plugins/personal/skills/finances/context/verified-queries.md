@@ -41,18 +41,24 @@ adaptations that come up most.
 
 ## Adaptations that come up constantly
 
-**Narrow a saved query to a date range.** Prefer adapting `monthly-spending`
-over writing fresh SQL — it already excludes transfers and uses positive
-`spend_amount`:
+**Spending by category for a date range.** Use `canonical_category`, not
+`category` — see `definitions.md`. Proven against July 2026:
 
 ```sql
-SELECT category, ROUND(SUM(spend_amount), 2) AS spending, COUNT(*) AS transactions
-FROM finance.v_spending
+SELECT parent_category, canonical_category,
+       ROUND(SUM(spend_amount), 2) AS spending,
+       COUNT(*) AS transactions
+FROM gold.transactions
 WHERE transaction_date BETWEEN '2026-07-01' AND '2026-07-31'
-  AND NOT is_transfer
-GROUP BY category
+  AND flow_type = 'expense'
+GROUP BY parent_category, canonical_category
 ORDER BY spending DESC
 ```
+
+Returns, for dining: Restaurants & Bars $2,100.68 / 45, Groceries $1,662.13 /
+35, Delivery $584.09 / 11, Coffee $229.27 / 16 — all under parent Food & Drink.
+The raw-`category` version of this query disagrees; that is the bug, not a
+rounding difference.
 
 **Spending for one vendor over time** — go through `gold.transactions` so vendor
 identity is the resolved one, not the raw description:
