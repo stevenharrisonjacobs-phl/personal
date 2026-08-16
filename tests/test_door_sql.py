@@ -230,3 +230,38 @@ def test_every_governed_method_refuses_a_stranger():
 )
 def test_email_verified_claim_normalization(raw, expected):
     assert _email_verified_claim(raw) is expected
+
+
+# ── Firestore key encoding ───────────────────────────────────────────────────
+
+
+def test_firestore_sanitizer_handles_url_shaped_client_ids():
+    """claude.ai registers with a client_id that is a URL, and Firestore
+    document IDs cannot contain '/'. Without an explicit sanitization strategy
+    the first OAuth callback 500s with 'lacks a collection id' — which reaches
+    the user as a bare Internal Server Error naming nothing useful."""
+    firestore = pytest.importorskip("key_value.aio.stores.firestore")
+    strategy = firestore.FirestoreV1KeySanitizationStrategy()
+
+    real_client_id = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+    for key in (real_client_id, "", "..", "__reserved__", "plain-key"):
+        out = strategy.sanitize(key)
+        assert "/" not in out, f"{key!r} sanitized to something Firestore rejects"
+        assert out, f"{key!r} sanitized to empty"
+
+    # Distinct inputs must not collide into one stored registration.
+    a = strategy.sanitize(real_client_id)
+    b = strategy.sanitize(real_client_id + "-other")
+    assert a != b
+
+
+def test_auth_wires_the_sanitizers():
+    """Guard the wiring, not just the library: these default to None, so
+    omitting them is silent until a real client connects."""
+    import inspect
+
+    from door import auth
+
+    src = inspect.getsource(auth.build_auth)
+    assert "FirestoreV1KeySanitizationStrategy()" in src
+    assert "FirestoreV1CollectionSanitizationStrategy()" in src

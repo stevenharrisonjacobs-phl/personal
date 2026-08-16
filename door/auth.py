@@ -91,9 +91,20 @@ def build_auth():
                 "STORAGE_ENCRYPTION_KEY, and JWT_SIGNING_KEY together."
             )
         from cryptography.fernet import Fernet
-        from key_value.aio.stores.firestore import FirestoreStore
+        from key_value.aio.stores.firestore import (
+            FirestoreStore,
+            FirestoreV1CollectionSanitizationStrategy,
+            FirestoreV1KeySanitizationStrategy,
+        )
         from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
+        # The sanitization strategies are NOT optional here, despite defaulting
+        # to None. claude.ai registers itself with a client_id that is a URL —
+        # `https://claude.ai/oauth/mcp-oauth-client-metadata` — and Firestore
+        # document IDs cannot contain "/". Without these, the very first OAuth
+        # callback dies with `Document name ... lacks a collection id`, which
+        # surfaces to the user as a bare "Internal Server Error" with nothing
+        # linking it back to key encoding.
         kwargs["jwt_signing_key"] = signing_key
         kwargs["client_storage"] = FernetEncryptionWrapper(
             key_value=FirestoreStore(
@@ -102,6 +113,8 @@ def build_auth():
                 default_collection=os.environ.get(
                     "FIRESTORE_COLLECTION", "personal_door_oauth"
                 ),
+                key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
+                collection_sanitization_strategy=FirestoreV1CollectionSanitizationStrategy(),
             ),
             fernet=Fernet(storage_key.encode()),
         )
