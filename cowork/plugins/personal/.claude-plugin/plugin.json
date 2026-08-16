@@ -1,0 +1,9 @@
+{
+  "name": "personal",
+  "version": "0.1.0",
+  "description": "Personal finance skills for a Cowork seat: analyze, advisor review, and mirror health through the personal-door connector.",
+  "author": {
+    "name": "Steven Jacobs",
+    "email": "stevenharrisonjacobs@gmail.com"
+  }
+}

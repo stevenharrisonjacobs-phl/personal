@@ -1,0 +1,20 @@
+# Build the door image with an EXPLICIT -f door/Dockerfile.
+#
+# `gcloud builds submit --tag` auto-detects a repository-ROOT Dockerfile. This
+# repo has none today, so that form would silently fall through to buildpacks
+# and ship something that is not this service. On 2026-07-31 the same mistake on
+# the Bobsled door shipped a revision that 404'd on every path including /mcp.
+# Being explicit here is the fix.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - door/Dockerfile
+      - -t
+      - ${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+options:
+  logging: CLOUD_LOGGING_ONLY
