@@ -180,22 +180,50 @@ candidate)
     exit 1
   fi
 
+  : "${PERSONAL_DOOR_ALLOWED_EMAILS:?set PERSONAL_DOOR_ALLOWED_EMAILS}"
+  : "${BASE_URL:?set BASE_URL to the service origin}"
+  : "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
+  case "$GOOGLE_OAUTH_CLIENT_ID" in
+    PASTE_*|*replace-with-*|"")
+      echo "GOOGLE_OAUTH_CLIENT_ID is still the placeholder — paste the real one." >&2
+      exit 1 ;;
+  esac
+
+  # --no-traffic is rejected when CREATING a service, so the first deploy cannot
+  # use the candidate pattern. That is fine: a service with no prior revision has
+  # no live traffic to shield, and it is still gated by OAuth + the allowlist
+  # with nothing connected to it yet. Every later deploy gets the full dance.
+  traffic_args=(--no-traffic --tag candidate)
+  if ! gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
+    echo "First deploy — creating the service, so this revision takes traffic"
+    echo "immediately (Cloud Run rejects --no-traffic on creation). Nothing is"
+    echo "connected to it yet, and OAuth + the allowlist still gate every call."
+    traffic_args=()
+  fi
+
   # --no-invoker-iam-check keeps the URL publicly reachable (claude.ai must
   # reach it) while the door's own OAuth + allowlist remain the perimeter.
   gc run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
     --image "$IMAGE" \
     --service-account "$SA" \
     --no-invoker-iam-check \
-    --no-traffic --tag candidate \
-    --set-env-vars "GCP_PROJECT_ID=${PROJECT},FINANCE_DATASET=finance,GOLD_DATASET=gold,FIRESTORE_PROJECT=${PROJECT},PERSONAL_DOOR_ALLOWED_EMAILS=${PERSONAL_DOOR_ALLOWED_EMAILS:?set PERSONAL_DOOR_ALLOWED_EMAILS},BASE_URL=${BASE_URL:?set BASE_URL to the service origin},GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}" \
+    "${traffic_args[@]}" \
+    --set-env-vars "GCP_PROJECT_ID=${PROJECT},FINANCE_DATASET=finance,GOLD_DATASET=gold,FIRESTORE_PROJECT=${PROJECT},PERSONAL_DOOR_ALLOWED_EMAILS=${PERSONAL_DOOR_ALLOWED_EMAILS},BASE_URL=${BASE_URL},GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}" \
     --set-secrets "GOOGLE_OAUTH_CLIENT_SECRET=GOOGLE_OAUTH_CLIENT_SECRET:latest,JWT_SIGNING_KEY=JWT_SIGNING_KEY:latest,STORAGE_ENCRYPTION_KEY=STORAGE_ENCRYPTION_KEY:latest"
-  echo "Candidate deployed with no traffic. Next: $0 probe"
+  echo "Deployed. Next: $0 probe"
   ;;
 
 probe)
+  # Prefer the candidate tag; on a first deploy there is no candidate, so fall
+  # back to the service's own URL rather than reporting a missing deploy.
   url=$(gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
-        --format='value(status.traffic.url)' | tr ' ' '\n' | grep candidate | head -1)
-  [ -n "$url" ] || { echo "No candidate URL found. Deploy a candidate first." >&2; exit 1; }
+        --format='value(status.traffic.url)' 2>/dev/null | tr ' ' '\n' | grep candidate | head -1)
+  if [ -z "$url" ]; then
+    url=$(gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+          --format='value(status.url)' 2>/dev/null)
+    [ -n "$url" ] && echo "(no candidate tag — probing the live service URL)"
+  fi
+  [ -n "$url" ] || { echo "Service not found. Deploy first: $0 candidate" >&2; exit 1; }
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
