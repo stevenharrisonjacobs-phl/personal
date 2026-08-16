@@ -75,14 +75,34 @@ bootstrap)
     || gc iam service-accounts create "${SERVICE}-runtime" --project "$PROJECT" \
          --display-name "personal-door runtime"
 
+  # A freshly created service account is not immediately visible to the IAM
+  # policy API, so binding a role right after creating it fails with a flatly
+  # untrue "does not exist". Wait for it to actually resolve.
+  echo -n "Waiting for the service account to propagate to IAM"
+  for _ in $(seq 1 30); do
+    if gc iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1; then
+      # describe succeeding is necessary but not sufficient — the policy API
+      # lags behind it, so probe with the real operation.
+      if gc projects add-iam-policy-binding "$PROJECT" \
+           --member "serviceAccount:$SA" --role roles/bigquery.jobUser \
+           --condition=None >/dev/null 2>&1; then
+        echo " ok"
+        break
+      fi
+    fi
+    echo -n "."
+    sleep 4
+  done
+
   # Read-only on the warehouse; Firestore for encrypted OAuth state. No Drive
   # scope anywhere — that is what keeps tiller_raw genuinely unreachable.
-  gc projects add-iam-policy-binding "$PROJECT" \
-    --member "serviceAccount:$SA" --role roles/bigquery.dataViewer --condition=None >/dev/null
-  gc projects add-iam-policy-binding "$PROJECT" \
-    --member "serviceAccount:$SA" --role roles/bigquery.jobUser --condition=None >/dev/null
-  gc projects add-iam-policy-binding "$PROJECT" \
-    --member "serviceAccount:$SA" --role roles/datastore.user --condition=None >/dev/null
+  # Idempotent: re-adding an existing binding is a no-op, so re-running is safe.
+  for role in roles/bigquery.dataViewer roles/bigquery.jobUser roles/datastore.user; do
+    gc projects add-iam-policy-binding "$PROJECT" \
+      --member "serviceAccount:$SA" --role "$role" --condition=None >/dev/null \
+      || { echo "FAILED to grant $role — re-run bootstrap." >&2; exit 1; }
+    echo "  granted $role"
+  done
 
   echo
   echo "Bootstrap done. Next: $0 secrets"
