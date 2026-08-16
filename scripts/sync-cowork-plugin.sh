@@ -95,8 +95,14 @@ cat <<'EOF'
 
 Release checklist:
   1. Bump "version" in cowork/plugins/personal/.claude-plugin/plugin.json
-     (and cowork/VERSION), then commit and push to main.
-  2. In claude.ai: Customize > Plugins > update. Sync is NOT near-real-time.
-  3. If the DOOR's toolset changed, remove and re-add the connector — a
+     (and cowork/VERSION).
+  2. Commit and push to MAIN. claude.ai reads the repo's default branch — work
+     sitting on a feature branch is invisible to it.
+  3. In claude.ai: Customize > Plugins > update. Sync is NOT near-real-time.
+  4. If the DOOR's toolset changed, remove and re-add the connector — a
      connector snapshots its tool list when added.
+
+Layout note: the marketplace manifest lives at REPO ROOT (.claude-plugin/
+marketplace.json) because that is where claude.ai looks. Only the plugin itself
+lives under cowork/.
 EOF

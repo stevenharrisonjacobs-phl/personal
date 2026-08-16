@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "personal",
-      "source": "./plugins/personal",
+      "source": "./cowork/plugins/personal",
       "description": "Steven's personal skills, backed by a Google-authenticated read-only door onto the Tiller finance mirror."
     }
   ]
