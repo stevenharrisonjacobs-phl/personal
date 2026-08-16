@@ -5,7 +5,7 @@
 # publicly-reachable service fronting the finance mirror. So nothing runs
 # without an explicit stage argument, and `plan` (the default) only prints.
 #
-# Order:  plan → bootstrap (once) → build → candidate → probe → promote
+# Order:  plan → bootstrap (once) → secrets → build → candidate → probe → promote
 #
 # The candidate-then-probe dance is not ceremony. A broken image must never take
 # requests, and the tell is specific: on a healthy revision /mcp returns 401
@@ -44,8 +44,8 @@ personal-door deploy plan
 
 Stages (run one at a time, read the output of each):
 
-  bootstrap   one-time: Artifact Registry repo, runtime SA, BigQuery + Firestore
-              roles, and the Secret Manager secrets. Prints the secrets it needs.
+  bootstrap   one-time: Artifact Registry repo, runtime SA, BigQuery + Firestore IAM
+  secrets     create the 3 secrets (prompts for the OAuth secret, generates the rest)
   build       cloud build of door/Dockerfile -> \$IMAGE
   candidate   deploy \$IMAGE with NO traffic, tagged 'candidate'
   probe       POST /mcp on the candidate. Expect 401. A 404 = wrong image.
@@ -84,26 +84,48 @@ bootstrap)
   gc projects add-iam-policy-binding "$PROJECT" \
     --member "serviceAccount:$SA" --role roles/datastore.user --condition=None >/dev/null
 
-  cat <<'EOF'
+  echo
+  echo "Bootstrap done. Next: $0 secrets"
+  ;;
 
-Now create the three secrets (values never touch the repo or your shell history
-in a way you would commit):
+secrets)
+  # Done as a stage rather than as copy-paste commands: a trailing newline on
+  # the OAuth secret, or a Fernet key mangled by shell quoting, both fail late
+  # and confusingly (at the Google token exchange, not at deploy).
+  put() { # put NAME < value-on-stdin
+    local name="$1"
+    if gc secrets describe "$name" --project "$PROJECT" >/dev/null 2>&1; then
+      gc secrets versions add "$name" --data-file=- --project "$PROJECT" >/dev/null
+      echo "  $name — new version added"
+    else
+      gc secrets create "$name" --data-file=- --project "$PROJECT" >/dev/null
+      echo "  $name — created"
+    fi
+  }
 
-  python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-    -> STORAGE_ENCRYPTION_KEY
-  openssl rand -base64 48
-    -> JWT_SIGNING_KEY
-  the OAuth client secret from the Google Cloud console
-    -> GOOGLE_OAUTH_CLIENT_SECRET
+  printf 'Paste the OAuth client secret (input hidden), then Enter: '
+  IFS= read -rs CLIENT_SECRET
+  echo
+  [ -n "$CLIENT_SECRET" ] || { echo "Empty. Nothing done." >&2; exit 1; }
+  # printf %s, never echo: a trailing newline in the stored secret makes Google
+  # reject the token exchange with an error that does not mention whitespace.
+  printf %s "$CLIENT_SECRET" | put GOOGLE_OAUTH_CLIENT_SECRET
+  unset CLIENT_SECRET
 
-For each:
-  printf %s "<value>" | gcloud secrets create <NAME> --data-file=- --project PROJECT
-  gcloud secrets add-iam-policy-binding <NAME> --member serviceAccount:SA \
-    --role roles/secretmanager.secretAccessor --project PROJECT
+  openssl rand -base64 48 | tr -d '\n' | put JWT_SIGNING_KEY
 
-Also create the Firestore database once, if this project has none:
-  gcloud firestore databases create --location=nam5 --project PROJECT
-EOF
+  # A Fernet key is 32 random bytes in URL-SAFE base64. Plain `openssl -base64`
+  # emits +/ which Fernet rejects, hence the tr.
+  openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n' | put STORAGE_ENCRYPTION_KEY
+
+  for s in GOOGLE_OAUTH_CLIENT_SECRET JWT_SIGNING_KEY STORAGE_ENCRYPTION_KEY; do
+    gc secrets add-iam-policy-binding "$s" \
+      --member "serviceAccount:$SA" \
+      --role roles/secretmanager.secretAccessor \
+      --project "$PROJECT" >/dev/null
+  done
+  echo "Runtime SA granted access to all three."
+  echo "Next: $0 build"
   ;;
 
 build)
