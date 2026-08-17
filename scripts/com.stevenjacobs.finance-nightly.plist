@@ -8,11 +8,27 @@
     <string>/bin/bash</string>
     <string>/Users/stevenjacobs/conductor/repos/personal/scripts/nightly-sync.sh</string>
   </array>
+
+  <!-- launchd starts with almost no environment. gcloud/bq must be on PATH for
+       deploy.sh, and USER/LOGNAME must be set or the claude CLI cannot read its
+       OAuth token out of the macOS Keychain ("Not logged in"). -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/share/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/stevenjacobs</string>
+    <key>USER</key><string>stevenjacobs</string>
+    <key>LOGNAME</key><string>stevenjacobs</string>
+  </dict>
+
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>3</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
+
+  <!-- The Mac is often asleep at 3am; without this the run is simply skipped. -->
+  <key>RunAtLoad</key><false/>
+
   <key>StandardOutPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/nightly/launchd.out.log</string>
   <key>StandardErrorPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/nightly/launchd.err.log</string>
 </dict>

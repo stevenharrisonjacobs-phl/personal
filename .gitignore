@@ -11,3 +11,7 @@ client_secret*.bak
 # Rotated/backup copies of the OAuth client secret.
 .secrets_client_prev.json
 *client_prev*.json
+
+# beads task graph — local issue text, not for the repo
+.beads/
+.beads.gate.lock

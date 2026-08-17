@@ -527,6 +527,14 @@ WITH pair_candidates AS (
    -- Refine within the parent only. Without this, 812 rows would silently be
    -- re-parented by Copilot and the Tiller canonicalization fix would be undone.
    AND cc.parent_category = b.parent_category
+   -- 'unclassified' is Copilot declining to answer, not an answer — and it sits
+   -- under parent 'Other' alongside work_expenses, fees, taxes, cash and
+   -- education, so the same-parent guard above does NOT stop it from erasing a
+   -- real category. Measured 2026-08-17: 62 transactions / $1,159.91 read
+   -- 'unclassified' in gold.transactions while transactions_base held the right
+   -- answer, including deliberate vendor_category_map rows. A non-answer must
+   -- never outrank an answer.
+   AND cc.category_id != 'unclassified'
   LEFT JOIN unique_pairs AS p USING (transaction_key)
 ), classified AS (
   SELECT
