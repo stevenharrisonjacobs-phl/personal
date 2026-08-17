@@ -77,11 +77,16 @@ log "## 3. Agent review"
 #                    harness rather than trusted to the prompt. query.sh is
 #                    read-only; the write scripts are simply not reachable.
 if [[ "${NIGHTLY_AGENT_AUTONOMOUS:-1}" == "1" ]]; then
-  MANDATE="You MAY apply clear-cut classification fixes (rules, overrides,
-vendor-category mappings) and re-deploy. Log every write in the report. A wrong
-mapping is worse than none: it applies confidently to every future transaction
-and nothing flags it — so leave anything genuinely ambiguous (mixed-basket
-merchants, peer payments, one-off vendors) UNMAPPED and list it for Steven."
+  MANDATE="Then work the classification review queue
+(queries/vendor-category-candidates.sql) for a WHILE, not to exhaustion —
+references/vendor-mapping.md is the procedure and its rulings table is already
+decided, so apply those without asking. Respect suggested_action literally:
+alias variants instead of re-mapping them, promote recurring copilot rows, verify
+SUSPECT rows before trusting them, and STOP on small one-offs. Never map a
+one-off or a mixed-basket merchant — a wrong mapping applies confidently to every
+future transaction and nothing flags it. Re-deploy when you have written
+something, and report the tiller share of expense spend from
+queries/classification-sources.sql before and after so the trend is visible."
   PERM=(--permission-mode bypassPermissions)
 else
   MANDATE="Apply NO classification writes tonight. Diagnose only and list the
