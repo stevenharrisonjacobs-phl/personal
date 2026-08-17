@@ -487,33 +487,36 @@ WITH pair_candidates AS (
     AND paired_candidate_count = 1
 ), evidence AS (
   SELECT
-    -- Category comes from transactions_base and NOTHING here touches it.
+    -- ONE precedence chain, and this is the whole of it:
     --
-    -- Copilot's categories are deliberately not consulted (Steven, 2026-08-17).
-    -- There is exactly one precedence chain and it lives in transactions_base:
+    --   per-txn override > vendor_category_map > rule > Copilot (HISTORICAL only) > Tiller
     --
-    --     per-transaction override > vendor_category_map > rule > Tiller
+    -- The first three are resolved in transactions_base. The Copilot step is here
+    -- because copilot_transaction_matches is built after that table.
     --
-    -- This used to be a "refine within the same parent" join, on the theory that
-    -- Copilot could split Coffee and Delivery out of Tiller's coarser
-    -- "Restaurants". vendor_category_map now does that job explicitly, and the
-    -- join had become a second, invisible source of truth that OVERRODE the map:
-    -- measured 2026-08-17, 93 transactions across 25 merchants rendered as
-    -- something other than their explicit mapping — Mr Rabbit mapped to coffee
-    -- came out restaurants_bars, PlayStation mapped to media came out recreation.
-    -- A statistical guess silently beating a hand-made decision, with nothing
-    -- flagging it.
+    -- Why Copilot is bounded by a date instead of trusted or banned outright
+    -- (Steven, 2026-08-17): he hand-reviewed Copilot's categories historically, so
+    -- for that period they are good evidence — better than Tiller, which is an
+    -- unmanaged algorithm. He has STOPPED reviewing them, so anything after the
+    -- reviewed-through date is just another unreviewed guess and must not be used.
+    -- A future Copilot import will happily contain newer rows; the date below is
+    -- what stops them being trusted silently. Bump it only after an actual review.
     --
-    -- Copilot is still joined below, because flow_type genuinely depends on its
-    -- transaction TYPE (regular / internal transfer / income) to tell transfers
-    -- and income from spending. Only its category opinion is discarded, and the
-    -- flow_evidence_copilot_* columns stay exposed as review evidence.
+    -- Copilot also no longer competes with the map. It applies only where the base
+    -- fell through to Tiller (or nothing) — never over an override, a mapping or a
+    -- rule. That ordering is the fix for the regression measured earlier today: 93
+    -- transactions across 25 merchants had rendered as something other than their
+    -- explicit mapping, e.g. Mr Rabbit mapped to coffee coming out
+    -- restaurants_bars, PlayStation mapped to media coming out recreation.
     --
-    -- Consequence to keep in mind: an unmapped merchant now falls all the way
-    -- through to Tiller's coarser category. When that is wrong the fix is a map
-    -- row (scripts/add-vendor-category.sh) or a rule (scripts/add-rule.sh) —
-    -- our own logic, in the one place it belongs.
-    b.*,
+    -- 'unclassified' is Copilot declining to answer, not an answer, so it is
+    -- excluded — a non-answer must never displace anything.
+    b.* EXCEPT(category_id, canonical_category, parent_category, category_kind, classification_source),
+    IF(cop.category_id IS NOT NULL, cop.category_id, b.category_id) AS category_id,
+    IF(cop.category_id IS NOT NULL, cop.category_name, b.canonical_category) AS canonical_category,
+    IF(cop.category_id IS NOT NULL, cop.parent_category, b.parent_category) AS parent_category,
+    IF(cop.category_id IS NOT NULL, cop.category_kind, b.category_kind) AS category_kind,
+    IF(cop.category_id IS NOT NULL, 'copilot:reviewed', b.classification_source) AS classification_source,
     c.copilot_transaction_key,
     c.copilot_category AS flow_evidence_copilot_category,
     c.copilot_category_id AS flow_evidence_copilot_category_id,
@@ -523,6 +526,18 @@ WITH pair_candidates AS (
     LOWER(COALESCE(b.description, b.full_description, '')) AS flow_description
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base` AS b
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.copilot_transaction_matches` AS c USING (transaction_key)
+  -- The Copilot category, but only where it is allowed to speak: inside the
+  -- hand-reviewed window, and only for rows the deliberate layers did not decide.
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cop
+    ON cop.active
+   AND cop.category_id = c.copilot_category_id
+   AND cop.category_id != 'unclassified'
+   -- Reviewed-through date. Copilot's export currently ends 2026-07-09, which is
+   -- also the last of it Steven reviewed. Raise this ONLY after reviewing a newer
+   -- export, never just because a newer export was imported.
+   AND b.transaction_date <= DATE '2026-07-09'
+   -- Never override a deliberate decision — only fill a Tiller/empty fallback.
+   AND b.classification_source IN ('tiller', 'uncategorized')
   LEFT JOIN unique_pairs AS p USING (transaction_key)
 ), classified AS (
   SELECT
