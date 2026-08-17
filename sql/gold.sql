@@ -453,7 +453,31 @@ WITH pair_candidates AS (
     AND paired_candidate_count = 1
 ), evidence AS (
   SELECT
-    b.*,
+    b.* EXCEPT(category_id, canonical_category, parent_category, category_kind),
+    -- Category: let a verified Copilot match REFINE the category, never move it.
+    --
+    -- transactions_base resolves canonical_category from the Tiller category
+    -- alone, because it runs before this join. Tiller's taxonomy is coarser:
+    -- Coffee and Delivery are Copilot subcategories that Tiller lumps into
+    -- Restaurants, so Tiller alone erases them.
+    --
+    -- The join below requires the Copilot category to sit under the SAME parent
+    -- the Tiller side already resolved. That is the whole safety property:
+    -- Copilot can say "this Food & Drink row is Coffee, not Restaurants", but it
+    -- can never say "this is not Food & Drink at all". Measured 2026-08-17: 755
+    -- rows refine within their parent (363 of them Coffee/Delivery), while 812
+    -- re-parenting disagreements are deliberately ignored — those are what the
+    -- Tiller canonicalization fix in aec67fa exists to settle, and this must not
+    -- silently undo it.
+    --
+    -- Scope: the Copilot export is a point-in-time CSV (currently through
+    -- 2026-07-10), so this only enriches transactions up to its last date.
+    -- Later transactions keep the Tiller category no matter what — for those the
+    -- durable fix is a classification rule (scripts/add-rule.sh), not this join.
+    COALESCE(cc.category_id, b.category_id) AS category_id,
+    COALESCE(cc.category_name, b.canonical_category) AS canonical_category,
+    b.parent_category,
+    COALESCE(cc.category_kind, b.category_kind) AS category_kind,
     c.copilot_transaction_key,
     c.copilot_category AS flow_evidence_copilot_category,
     c.copilot_category_id AS flow_evidence_copilot_category_id,
@@ -463,6 +487,12 @@ WITH pair_candidates AS (
     LOWER(COALESCE(b.description, b.full_description, '')) AS flow_description
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base` AS b
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.copilot_transaction_matches` AS c USING (transaction_key)
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cc
+    ON cc.active
+   AND cc.category_id = c.copilot_category_id
+   -- Refine within the parent only. Without this, 812 rows would silently be
+   -- re-parented by Copilot and the Tiller canonicalization fix would be undone.
+   AND cc.parent_category = b.parent_category
   LEFT JOIN unique_pairs AS p USING (transaction_key)
 ), classified AS (
   SELECT
