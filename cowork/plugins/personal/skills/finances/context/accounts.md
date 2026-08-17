@@ -9,11 +9,27 @@ update-when: an account is connected to or disconnected from Tiller; an
 
 # Accounts — what "stale" means here
 
-`feed_health()` reports days since each account's latest transaction. That number
-is meaningless on its own. **Judge accounts against each other, never against an
-absolute threshold**, and use this doc to tell a broken feed from a quiet one.
+There are **two** different failures, and the obvious check only sees one.
 
-## The rule
+## Check the mirror before checking the accounts
+
+If the hourly job dies, **every account freezes together** — so comparing
+accounts to each other looks perfectly normal while the whole dataset is
+frozen. `feed_health()` now returns a `mirror` block; read it first. When
+`mirror_suspect` is true, nothing else in the output means anything.
+
+This is not hypothetical. From **2026-08-12 to 2026-08-17** the scheduled query
+failed every single hour on one bad cell in the Tiller sheet, and the mirror sat
+five days stale. The per-account view looked unremarkable the whole time, and an
+agent reading it called the mirror healthy. Absence of new data is not visible
+as an anomaly in data — the same blind spot that let three mortgage payments go
+unnoticed.
+
+When `mirror_suspect` is true, look at the **"Tiller hourly mirror" scheduled
+query** for failures. Fixing it is a source-side or deploy action, and until it
+is fixed every answer is missing everything since the newest date shown.
+
+## Then: one account vs the others
 
 > An account with **many transactions in the last 30 days** but a
 > `days_since_latest` far above the other active cards has a **broken feed**.
