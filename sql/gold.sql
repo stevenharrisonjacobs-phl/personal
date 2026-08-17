@@ -417,7 +417,21 @@ FROM candidates
 WHERE tiller_candidate_count = 1
   AND copilot_candidate_count = 1;
 
-CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
+-- The transaction model is computed HERE, in `transactions_live`, and then
+-- materialized into `transactions` below.
+--
+-- Why: this is a view over a view over a view (transactions_base ->
+-- copilot_transaction_matches -> here), so every read recomputed dedup, vendor
+-- resolution, category mapping and flow logic from scratch. Measured
+-- 2026-08-17: `SELECT COUNT(*)` cost 21s against the view and 3s against a
+-- native table. Through the Door that made every tool call ~15s, and an agent
+-- that chains thirty calls spent nine minutes recomputing the same model.
+--
+-- Query `transactions` (the table). `transactions_live` exists so the hourly
+-- refresh has something to materialize FROM, and for the rare case where you
+-- need the model recomputed against this instant rather than the last refresh.
+-- It is deliberately absent from the Door's source whitelist.
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transactions_live` AS
 WITH pair_candidates AS (
   SELECT
     x.transaction_key,
@@ -638,6 +652,17 @@ SELECT
 FROM resolved AS c
 LEFT JOIN account_identity AS ai
   ON ai.mask4 = RIGHT(REGEXP_REPLACE(COALESCE(c.account_number_masked, ''), r'[^0-9]+', ''), 4);
+
+-- Materialize the model. Every view below reads this table rather than
+-- recomputing the stack, so they get the same speedup for free.
+--
+-- Freshness: rebuilt by the hourly job in refresh.sql, which is the same
+-- cadence the mirror itself refreshes on — so this costs no real currency.
+-- Staleness is visible: compare `built_at` against CURRENT_TIMESTAMP, and
+-- feed_health surfaces a mirror that has stopped moving.
+CREATE OR REPLACE TABLE `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
+SELECT *, CURRENT_TIMESTAMP() AS built_at
+FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_live`;
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_review` AS
 SELECT
