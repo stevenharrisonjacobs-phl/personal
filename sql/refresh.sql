@@ -1,8 +1,19 @@
+-- Try the 2-digit year BEFORE the 4-digit one. This order matters and the
+-- obvious order is wrong: '%Y' happily parses "26" as the year 0026, so with
+-- '%Y' first every 2-digit date lands two millennia in the past instead of
+-- falling through. The Balance History tab sends 2-digit years, which is how
+-- 2,514 balance rows sat in year 0026 while the one hand-inserted row was in
+-- 2026 — v_monthly_net_worth split into two timelines and reported net worth of
+-- $445k against a true ~$972k.
+--
+-- Reversing them is safe because '%y' returns NULL on a 4-digit year (verified:
+-- SAFE.PARSE_DATE('%m/%d/%y','01/02/2026') IS NULL), so 4-digit dates still fall
+-- through to '%Y'. Both formats now parse correctly.
 CREATE TEMP FUNCTION parse_tiller_date(value STRING) AS (
   COALESCE(
     SAFE_CAST(value AS DATE),
-    SAFE.PARSE_DATE('%m/%d/%Y', value),
-    SAFE.PARSE_DATE('%m/%d/%y', value)
+    SAFE.PARSE_DATE('%m/%d/%y', value),
+    SAFE.PARSE_DATE('%m/%d/%Y', value)
   )
 );
 
