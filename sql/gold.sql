@@ -250,13 +250,12 @@ WITH deduplicated AS (
     REGEXP_CONTAINS(LOWER(COALESCE(category, '')), r'transfer|credit card payment') AS is_transfer,
     amount > 0 AND REGEXP_CONTAINS(LOWER(COALESCE(category, '')), r'refund|reimbursement|reward') AS is_refund
   FROM cleaned
-), category_resolved AS (
+), string_resolved AS (
+  -- The category string from finance (already override > rule > Tiller), resolved
+  -- to a category_id. This is the pre-map baseline.
   SELECT
     v.*,
-    c.category_id,
-    c.category_name AS canonical_category,
-    c.parent_category,
-    c.category_kind
+    c.category_id AS string_category_id
   FROM vendor_resolved AS v
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` AS a
     ON a.active
@@ -276,6 +275,41 @@ WITH deduplicated AS (
        AND REGEXP_REPLACE(LOWER(c.category_name), r'[^a-z0-9]+', '') = REGEXP_REPLACE(LOWER(COALESCE(v.category, '')), r'[^a-z0-9]+', '')
      )
    )
+), vendor_map AS (
+  -- Known classifications by merchant name. Steven's design: this is the FIRST
+  -- thing consulted, ahead of the regex rules and the Tiller fallback, below only
+  -- a per-transaction override. Commit dcbbf98 seeded the table and its tooling
+  -- but deferred this wiring; this is that wiring.
+  SELECT vendor_name, category_id
+  FROM `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map`
+  WHERE enabled
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY vendor_name ORDER BY created_at DESC) = 1
+), category_resolved AS (
+  SELECT
+    s.* EXCEPT(string_category_id, classification_source),
+    eff.category_id,
+    cat.category_name AS canonical_category,
+    cat.parent_category,
+    cat.category_kind,
+    -- Mark rows the map decided, so classification_source stays honest.
+    CASE
+      WHEN s.classification_source = 'override' THEN s.classification_source
+      WHEN vm.vendor_name IS NOT NULL THEN 'vendor_map'
+      ELSE s.classification_source
+    END AS classification_source
+  FROM string_resolved AS s
+  LEFT JOIN vendor_map AS vm ON vm.vendor_name = s.vendor_name
+  -- Precedence: a per-txn override beats the map; otherwise the map beats the
+  -- rule/Tiller string; otherwise fall through to the string.
+  CROSS JOIN UNNEST([STRUCT(
+    COALESCE(
+      IF(s.classification_source = 'override', s.string_category_id, NULL),
+      vm.category_id,
+      s.string_category_id
+    ) AS category_id
+  )]) AS eff
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cat
+    ON cat.active AND cat.category_id = eff.category_id
 ), epic_resolved AS (
   SELECT
     c.*,
@@ -417,7 +451,21 @@ FROM candidates
 WHERE tiller_candidate_count = 1
   AND copilot_candidate_count = 1;
 
-CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
+-- The transaction model is computed HERE, in `transactions_live`, and then
+-- materialized into `transactions` below.
+--
+-- Why: this is a view over a view over a view (transactions_base ->
+-- copilot_transaction_matches -> here), so every read recomputed dedup, vendor
+-- resolution, category mapping and flow logic from scratch. Measured
+-- 2026-08-17: `SELECT COUNT(*)` cost 21s against the view and 3s against a
+-- native table. Through the Door that made every tool call ~15s, and an agent
+-- that chains thirty calls spent nine minutes recomputing the same model.
+--
+-- Query `transactions` (the table). `transactions_live` exists so the hourly
+-- refresh has something to materialize FROM, and for the rare case where you
+-- need the model recomputed against this instant rather than the last refresh.
+-- It is deliberately absent from the Door's source whitelist.
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transactions_live` AS
 WITH pair_candidates AS (
   SELECT
     x.transaction_key,
@@ -439,7 +487,31 @@ WITH pair_candidates AS (
     AND paired_candidate_count = 1
 ), evidence AS (
   SELECT
-    b.*,
+    b.* EXCEPT(category_id, canonical_category, parent_category, category_kind),
+    -- Category: let a verified Copilot match REFINE the category, never move it.
+    --
+    -- transactions_base resolves canonical_category from the Tiller category
+    -- alone, because it runs before this join. Tiller's taxonomy is coarser:
+    -- Coffee and Delivery are Copilot subcategories that Tiller lumps into
+    -- Restaurants, so Tiller alone erases them.
+    --
+    -- The join below requires the Copilot category to sit under the SAME parent
+    -- the Tiller side already resolved. That is the whole safety property:
+    -- Copilot can say "this Food & Drink row is Coffee, not Restaurants", but it
+    -- can never say "this is not Food & Drink at all". Measured 2026-08-17: 755
+    -- rows refine within their parent (363 of them Coffee/Delivery), while 812
+    -- re-parenting disagreements are deliberately ignored — those are what the
+    -- Tiller canonicalization fix in aec67fa exists to settle, and this must not
+    -- silently undo it.
+    --
+    -- Scope: the Copilot export is a point-in-time CSV (currently through
+    -- 2026-07-10), so this only enriches transactions up to its last date.
+    -- Later transactions keep the Tiller category no matter what — for those the
+    -- durable fix is a classification rule (scripts/add-rule.sh), not this join.
+    COALESCE(cc.category_id, b.category_id) AS category_id,
+    COALESCE(cc.category_name, b.canonical_category) AS canonical_category,
+    b.parent_category,
+    COALESCE(cc.category_kind, b.category_kind) AS category_kind,
     c.copilot_transaction_key,
     c.copilot_category AS flow_evidence_copilot_category,
     c.copilot_category_id AS flow_evidence_copilot_category_id,
@@ -449,6 +521,12 @@ WITH pair_candidates AS (
     LOWER(COALESCE(b.description, b.full_description, '')) AS flow_description
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_base` AS b
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.copilot_transaction_matches` AS c USING (transaction_key)
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cc
+    ON cc.active
+   AND cc.category_id = c.copilot_category_id
+   -- Refine within the parent only. Without this, 812 rows would silently be
+   -- re-parented by Copilot and the Tiller canonicalization fix would be undone.
+   AND cc.parent_category = b.parent_category
   LEFT JOIN unique_pairs AS p USING (transaction_key)
 ), classified AS (
   SELECT
@@ -457,6 +535,11 @@ WITH pair_candidates AS (
       WHEN amount = 0 THEN 'adjustment'
       -- Recurring monthly family distribution from Dean (Hannah's father): earned income.
       WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'earned_income'
+      -- Opaque bank-side "VENMO PAYMENT" debits fund the Venmo wallet; the real
+      -- spending is the itemized Venmo feed, which resolves to the counterparty
+      -- name, not "Venmo". Treat the bare-"Venmo" rows as transfers so they do not
+      -- double-count the feed. Steven's call, 2026-08-17.
+      WHEN vendor_name = 'Venmo' THEN 'internal_transfer'
       -- Cash deposits/checks moving in or out of a brokerage account are transfers,
       -- not income/expense (dividends & investment activity match other descriptions above).
       WHEN UPPER(account_name) LIKE 'BROKERAGE%'
@@ -508,6 +591,7 @@ WITH pair_candidates AS (
     CASE
       WHEN amount = 0 THEN 'zero_amount'
       WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'kasperzak_family_distribution'
+      WHEN vendor_name = 'Venmo' THEN 'venmo_wallet_funding'
       WHEN UPPER(account_name) LIKE 'BROKERAGE%'
        AND REGEXP_CONTAINS(flow_description, r'mobile deposit|remote online deposit|deposit id|check issued|expanded bank deposit|^deposit$')
         THEN 'brokerage_cash_movement'
@@ -638,6 +722,35 @@ SELECT
 FROM resolved AS c
 LEFT JOIN account_identity AS ai
   ON ai.mask4 = RIGHT(REGEXP_REPLACE(COALESCE(c.account_number_masked, ''), r'[^0-9]+', ''), 4);
+
+-- Materialize the model. Every view below reads this table rather than
+-- recomputing the stack, so they get the same speedup for free.
+--
+-- Freshness: rebuilt by the hourly job in refresh.sql, which is the same
+-- cadence the mirror itself refreshes on — so this costs no real currency.
+-- Staleness is visible: compare `built_at` against CURRENT_TIMESTAMP, and
+-- feed_health surfaces a mirror that has stopped moving.
+-- One-time migration, and it has to stay harmless forever.
+--
+-- BigQuery refuses CREATE OR REPLACE TABLE against a name holding a VIEW ("is
+-- not allowed for this operation because it currently has type VIEW"), so the
+-- first deploy after materialization must retire the old view. But `DROP VIEW
+-- IF EXISTS` does NOT tolerate the name holding a TABLE — IF EXISTS guards
+-- absence, not type — so once the migration succeeds, the very same statement
+-- fails with "Cannot drop ... which has type TABLE. A view was expected" and
+-- blocks every subsequent deploy.
+--
+-- Both directions therefore have to be survivable: drop it when it is still a
+-- view, shrug when it is already a table.
+BEGIN
+  DROP VIEW IF EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transactions`;
+EXCEPTION WHEN ERROR THEN
+  -- Already a table (the normal steady state). Nothing to retire.
+END;
+
+CREATE OR REPLACE TABLE `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
+SELECT *, CURRENT_TIMESTAMP() AS built_at
+FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_live`;
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__GOLD_DATASET__.transaction_flow_review` AS
 SELECT

@@ -1,0 +1,14 @@
+{
+  "name": "personal",
+  "owner": {
+    "name": "Steven Jacobs",
+    "email": "stevenharrisonjacobs@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "personal",
+      "source": "./cowork/plugins/personal",
+      "description": "Steven's personal skills, backed by a Google-authenticated read-only door onto the Tiller finance mirror."
+    }
+  ]
+}

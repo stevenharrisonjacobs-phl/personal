@@ -200,3 +200,23 @@ WHERE balance_date IS NOT NULL
   AND balance IS NOT NULL
 UNION ALL
 SELECT * FROM manual_balance_rows;
+
+-- Materialize the gold transaction model.
+--
+-- This script is BOTH run at deploy time and installed as the body of the
+-- hourly scheduled query, so putting the rebuild here is what keeps
+-- `gold.transactions` current. It must come after the finance.* rebuilds
+-- above, because the model reads them.
+--
+-- Wrapped in an exception handler for the FIRST deploy only: deploy.sh runs
+-- refresh.sql before gold.sql, so on a brand-new project `transactions_live`
+-- does not exist yet and this would otherwise abort the whole refresh. gold.sql
+-- creates the table itself moments later, and every subsequent run takes the
+-- happy path.
+BEGIN
+  CREATE OR REPLACE TABLE `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
+  SELECT *, CURRENT_TIMESTAMP() AS built_at
+  FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_live`;
+EXCEPTION WHEN ERROR THEN
+  SELECT 'gold.transactions_live not present yet; gold.sql will create the table' AS note;
+END;
