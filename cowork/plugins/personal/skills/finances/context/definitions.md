@@ -103,6 +103,36 @@ is always net-new.
   two views of the same money; adding them double-counts the commitment in the
   month it is actually paid.
 
+## Amortizing a lump payment
+
+When one transaction really represents several months (an autodraft that failed
+and caught up as a lump, an annual due paid once), spread it in the **reporting
+layer** — never by inserting synthetic transactions, which desync from the
+source and get overwritten on refresh.
+
+Add one row to `gold.amortization_schedule` keyed on the transaction:
+
+```sql
+INSERT INTO `<proj>.gold.amortization_schedule`
+  (amortization_id, transaction_key, epic_name, start_date, end_date, label, notes, enabled, created_at)
+VALUES (CONCAT('txn:', @key), @key, NULL, DATE '2026-06-01', DATE '2026-08-01',
+        'Mortgage autodraft catch-up (Jun-Aug 2026)', '...', TRUE, CURRENT_TIMESTAMP());
+```
+
+`v_spending_amortized` then spreads `spend_amount` evenly across the **inclusive**
+months `[start_date, end_date]` — `span_months = DATE_DIFF(end, start, MONTH) + 1`,
+each slice `spend_amount / span_months`. Slices are deliberately unrounded to
+conserve the total (`SUM(slices) == spend_amount`); round only at display.
+
+Notes:
+- The view reads the schedule **live** (no rebuild needed). But if you also need
+  to fix the transaction's category (e.g. a mortgage mis-filed as `Loan
+  Repayment`), that goes through `add-override.sh <key> "Housing"` and only lands
+  on the next model rebuild (`deploy.sh` or the hourly job).
+- Set `start_date` to the **first month the money covers**, not the pay date —
+  verify the surrounding months first (was the prior month already paid?) so you
+  spread across the right span. Precedent rows: "Fitler Club annual dues 2026".
+
 ## Epics
 
 `gold.epics` holds trips, renovations, celebrations — bounded projects. A large

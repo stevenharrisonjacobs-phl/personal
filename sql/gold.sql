@@ -250,13 +250,12 @@ WITH deduplicated AS (
     REGEXP_CONTAINS(LOWER(COALESCE(category, '')), r'transfer|credit card payment') AS is_transfer,
     amount > 0 AND REGEXP_CONTAINS(LOWER(COALESCE(category, '')), r'refund|reimbursement|reward') AS is_refund
   FROM cleaned
-), category_resolved AS (
+), string_resolved AS (
+  -- The category string from finance (already override > rule > Tiller), resolved
+  -- to a category_id. This is the pre-map baseline.
   SELECT
     v.*,
-    c.category_id,
-    c.category_name AS canonical_category,
-    c.parent_category,
-    c.category_kind
+    c.category_id AS string_category_id
   FROM vendor_resolved AS v
   LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.category_aliases` AS a
     ON a.active
@@ -276,6 +275,41 @@ WITH deduplicated AS (
        AND REGEXP_REPLACE(LOWER(c.category_name), r'[^a-z0-9]+', '') = REGEXP_REPLACE(LOWER(COALESCE(v.category, '')), r'[^a-z0-9]+', '')
      )
    )
+), vendor_map AS (
+  -- Known classifications by merchant name. Steven's design: this is the FIRST
+  -- thing consulted, ahead of the regex rules and the Tiller fallback, below only
+  -- a per-transaction override. Commit dcbbf98 seeded the table and its tooling
+  -- but deferred this wiring; this is that wiring.
+  SELECT vendor_name, category_id
+  FROM `__PROJECT_ID__.__GOLD_DATASET__.vendor_category_map`
+  WHERE enabled
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY vendor_name ORDER BY created_at DESC) = 1
+), category_resolved AS (
+  SELECT
+    s.* EXCEPT(string_category_id, classification_source),
+    eff.category_id,
+    cat.category_name AS canonical_category,
+    cat.parent_category,
+    cat.category_kind,
+    -- Mark rows the map decided, so classification_source stays honest.
+    CASE
+      WHEN s.classification_source = 'override' THEN s.classification_source
+      WHEN vm.vendor_name IS NOT NULL THEN 'vendor_map'
+      ELSE s.classification_source
+    END AS classification_source
+  FROM string_resolved AS s
+  LEFT JOIN vendor_map AS vm ON vm.vendor_name = s.vendor_name
+  -- Precedence: a per-txn override beats the map; otherwise the map beats the
+  -- rule/Tiller string; otherwise fall through to the string.
+  CROSS JOIN UNNEST([STRUCT(
+    COALESCE(
+      IF(s.classification_source = 'override', s.string_category_id, NULL),
+      vm.category_id,
+      s.string_category_id
+    ) AS category_id
+  )]) AS eff
+  LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cat
+    ON cat.active AND cat.category_id = eff.category_id
 ), epic_resolved AS (
   SELECT
     c.*,
@@ -501,6 +535,11 @@ WITH pair_candidates AS (
       WHEN amount = 0 THEN 'adjustment'
       -- Recurring monthly family distribution from Dean (Hannah's father): earned income.
       WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'earned_income'
+      -- Opaque bank-side "VENMO PAYMENT" debits fund the Venmo wallet; the real
+      -- spending is the itemized Venmo feed, which resolves to the counterparty
+      -- name, not "Venmo". Treat the bare-"Venmo" rows as transfers so they do not
+      -- double-count the feed. Steven's call, 2026-08-17.
+      WHEN vendor_name = 'Venmo' THEN 'internal_transfer'
       -- Cash deposits/checks moving in or out of a brokerage account are transfers,
       -- not income/expense (dividends & investment activity match other descriptions above).
       WHEN UPPER(account_name) LIKE 'BROKERAGE%'
@@ -552,6 +591,7 @@ WITH pair_candidates AS (
     CASE
       WHEN amount = 0 THEN 'zero_amount'
       WHEN vendor_name = 'Kasperzak Family Distribution' AND amount > 0 THEN 'kasperzak_family_distribution'
+      WHEN vendor_name = 'Venmo' THEN 'venmo_wallet_funding'
       WHEN UPPER(account_name) LIKE 'BROKERAGE%'
        AND REGEXP_CONTAINS(flow_description, r'mobile deposit|remote online deposit|deposit id|check issued|expanded bank deposit|^deposit$')
         THEN 'brokerage_cash_movement'
