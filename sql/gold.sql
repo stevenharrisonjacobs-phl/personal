@@ -690,11 +690,23 @@ LEFT JOIN account_identity AS ai
 -- cadence the mirror itself refreshes on — so this costs no real currency.
 -- Staleness is visible: compare `built_at` against CURRENT_TIMESTAMP, and
 -- feed_health surfaces a mirror that has stopped moving.
--- The DROP is required, not tidiness: BigQuery refuses CREATE OR REPLACE TABLE
--- against a name that currently holds a VIEW ("is not allowed for this
--- operation because it currently has type VIEW"), so the first deploy after
--- this change must retire the old view explicitly. Harmless on every run after.
-DROP VIEW IF EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transactions`;
+-- One-time migration, and it has to stay harmless forever.
+--
+-- BigQuery refuses CREATE OR REPLACE TABLE against a name holding a VIEW ("is
+-- not allowed for this operation because it currently has type VIEW"), so the
+-- first deploy after materialization must retire the old view. But `DROP VIEW
+-- IF EXISTS` does NOT tolerate the name holding a TABLE — IF EXISTS guards
+-- absence, not type — so once the migration succeeds, the very same statement
+-- fails with "Cannot drop ... which has type TABLE. A view was expected" and
+-- blocks every subsequent deploy.
+--
+-- Both directions therefore have to be survivable: drop it when it is still a
+-- view, shrug when it is already a table.
+BEGIN
+  DROP VIEW IF EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transactions`;
+EXCEPTION WHEN ERROR THEN
+  -- Already a table (the normal steady state). Nothing to retire.
+END;
 
 CREATE OR REPLACE TABLE `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
 SELECT *, CURRENT_TIMESTAMP() AS built_at
