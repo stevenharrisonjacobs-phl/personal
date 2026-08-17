@@ -265,3 +265,56 @@ def test_auth_wires_the_sanitizers():
     src = inspect.getsource(auth.build_auth)
     assert "FirestoreV1KeySanitizationStrategy()" in src
     assert "FirestoreV1CollectionSanitizationStrategy()" in src
+
+
+# ── mirror-level staleness ───────────────────────────────────────────────────
+
+
+def _fake_mirror(monkeypatch, days, newest="2026-08-11"):
+    from door import finance_native, saved_queries
+
+    def fake(sql, max_rows=100, dry_run=False):
+        return {
+            "status": "ok",
+            "results": [
+                {"newest_transaction_anywhere": newest, "days_since_newest": days}
+            ],
+        }
+
+    monkeypatch.setattr(finance_native, "run_finance_query", fake)
+    return saved_queries
+
+
+def test_mirror_stall_is_flagged(monkeypatch):
+    """The failure per-account staleness structurally cannot see: when the hourly
+    job dies, every account freezes together, so the relative comparison looks
+    normal. This happened for five days (2026-08-12 to 08-17) on one bad cell."""
+    sq = _fake_mirror(monkeypatch, days=6)
+    out = sq.mirror_health()
+    assert out["mirror_suspect"] is True
+    assert "broken" in out["verdict"].lower()
+
+
+def test_normal_feed_lag_is_not_flagged(monkeypatch):
+    """Bank feeds lag a day or two — that must not cry wolf."""
+    sq = _fake_mirror(monkeypatch, days=1)
+    assert sq.mirror_health()["mirror_suspect"] is False
+
+
+def test_feed_health_surfaces_the_mirror_verdict(monkeypatch):
+    from door import finance_native, saved_queries
+
+    def fake(sql, max_rows=100, dry_run=False):
+        if "newest_transaction_anywhere" in sql:
+            return {
+                "status": "ok",
+                "results": [
+                    {"newest_transaction_anywhere": "2026-08-11", "days_since_newest": 6}
+                ],
+            }
+        return {"status": "ok", "results": [], "result_count": 0}
+
+    monkeypatch.setattr(finance_native, "run_finance_query", fake)
+    out = saved_queries.feed_health()
+    assert out["mirror"]["mirror_suspect"] is True
+    assert "CHECK `mirror` FIRST" in out["how_to_read"]

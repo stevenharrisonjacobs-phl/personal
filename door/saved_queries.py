@@ -106,20 +106,67 @@ ORDER BY days_since_latest DESC, account_name
 """
 
 
-def feed_health(max_rows: int = 100) -> dict:
-    """Per-account feed freshness — the check that catches a silently dead feed.
+# Per-account staleness cannot see the mirror itself stopping: if the hourly job
+# dies, EVERY account freezes together and the per-account comparison — which is
+# explicitly relative — looks normal. That is not hypothetical. The scheduled
+# query failed every hour from 2026-08-12 to 2026-08-17 on a single bad cell,
+# and the per-account view looked entirely unremarkable throughout.
+MIRROR_HEALTH_SQL = f"""
+SELECT
+  MAX(transaction_date) AS newest_transaction_anywhere,
+  DATE_DIFF(CURRENT_DATE(), MAX(transaction_date), DAY) AS days_since_newest
+FROM `{finance_native.PROJECT}.{finance_native.GOLD}.transactions`
+"""
 
-    Judge accounts against EACH OTHER, never an absolute threshold: an account
-    with many txns_last_30d but a days_since_latest far above the other active
-    cards has a broken feed. Low-activity accounts (trusts, retirement) are
-    naturally stale and are not a problem.
+# Bank feeds lag by a day or two normally, so a few days is unremarkable. Past
+# roughly a week with NOTHING arriving on ANY account, the mirror itself is the
+# suspect, not the accounts.
+MIRROR_STALE_DAYS = 4
+
+
+def mirror_health() -> dict:
+    """Is the mirror itself still running? Distinct from per-account freshness."""
+    result = finance_native.run_finance_query(MIRROR_HEALTH_SQL, max_rows=1)
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return {"status": "unknown", "detail": result}
+    row = (result.get("results") or [{}])[0]
+    days = row.get("days_since_newest")
+    stale = isinstance(days, int) and days >= MIRROR_STALE_DAYS
+    return {
+        "newest_transaction_anywhere": row.get("newest_transaction_anywhere"),
+        "days_since_newest": days,
+        "mirror_suspect": stale,
+        "verdict": (
+            "NOTHING has arrived on ANY account for "
+            f"{days} days. Treat the mirror as broken until proven otherwise — "
+            "check the 'Tiller hourly mirror' scheduled query for failures "
+            "before trusting any number below. Every answer built on this data "
+            "is missing everything since then."
+            if stale
+            else "Mirror looks live."
+        ),
+    }
+
+
+def feed_health(max_rows: int = 100) -> dict:
+    """Per-account feed freshness, plus whether the mirror itself is alive.
+
+    Two different failures, and only one of them is visible per-account:
+      - ONE account stops  -> compare accounts to each other
+      - the MIRROR stops   -> every account freezes together, so the relative
+                              comparison looks fine and only the absolute
+                              newest-transaction date gives it away
     """
     result = finance_native.run_finance_query(FEED_HEALTH_SQL, max_rows=max_rows)
     if isinstance(result, dict) and result.get("status") == "ok":
+        result["mirror"] = mirror_health()
         result["how_to_read"] = (
-            "Compare accounts to each other. A high txns_last_30d with a high "
-            "days_since_latest means a broken feed — the fix is to reconnect "
-            "that account in Tiller, which is a source-side action, not a repo "
-            "change. Naturally-stale accounts (trusts, retirement) are fine."
+            "CHECK `mirror` FIRST. If mirror_suspect is true, nothing below is "
+            "trustworthy — the whole mirror has stopped and every account looks "
+            "equally stale, which the per-account comparison cannot detect. "
+            "Otherwise compare accounts to each other: a high txns_last_30d "
+            "with a high days_since_latest means one broken feed — reconnect "
+            "that account in Tiller, a source-side action, not a repo change. "
+            "Naturally-stale accounts (trusts, retirement) are fine."
         )
     return result

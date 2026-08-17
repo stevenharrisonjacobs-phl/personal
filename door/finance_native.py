@@ -94,6 +94,10 @@ SOURCES: dict[str, dict[str, str]] = {
         "grain": "observed vendor label",
         "summary": "Every observed vendor label with its canonical name, mapping method, confidence, and review status.",
     },
+    f"{GOLD}.copilot_transaction_matches": {
+        "grain": "transaction with a verified Copilot match",
+        "summary": "One-to-one links between a Tiller transaction and its Copilot row, carrying the hand-reviewed Copilot category. This is the evidence behind category refinement — read it to explain WHY a transaction is categorized as it is.",
+    },
     f"{GOLD}.v_projection": {
         "grain": "projected period",
         "summary": "Forward projection built on finance.assumptions. Advisor-review surface; state the assumption set behind any number taken from here.",
