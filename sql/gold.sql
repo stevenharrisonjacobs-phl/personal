@@ -660,6 +660,12 @@ LEFT JOIN account_identity AS ai
 -- cadence the mirror itself refreshes on — so this costs no real currency.
 -- Staleness is visible: compare `built_at` against CURRENT_TIMESTAMP, and
 -- feed_health surfaces a mirror that has stopped moving.
+-- The DROP is required, not tidiness: BigQuery refuses CREATE OR REPLACE TABLE
+-- against a name that currently holds a VIEW ("is not allowed for this
+-- operation because it currently has type VIEW"), so the first deploy after
+-- this change must retire the old view explicitly. Harmless on every run after.
+DROP VIEW IF EXISTS `__PROJECT_ID__.__GOLD_DATASET__.transactions`;
+
 CREATE OR REPLACE TABLE `__PROJECT_ID__.__GOLD_DATASET__.transactions` AS
 SELECT *, CURRENT_TIMESTAMP() AS built_at
 FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions_live`;
