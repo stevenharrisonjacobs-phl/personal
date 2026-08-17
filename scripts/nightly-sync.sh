@@ -17,11 +17,23 @@
 #                    Set NIGHTLY_AGENT_AUTONOMOUS=0 to drop back to diagnose-only
 #                    (no writes) — see the read-only-door rule in the finances skill.
 #
-# Auth note: both steps need credentials that live on THIS machine — gcloud must
-# be authed as steven@plumgrowth.ai with Drive access (deploy.sh), and the claude
-# CLI must be logged in. launchd runs with a bare environment, so test this
-# script by hand first (`bash scripts/nightly-sync.sh`) before loading the plist.
+# Auth, and why the environment below is explicit rather than inherited:
+#
+#   - deploy.sh needs gcloud authed as steven@plumgrowth.ai WITH Drive access
+#     (it reads the Tiller sheet), and needs bq + jq on PATH. launchd starts with
+#     essentially no PATH, so the google-cloud-sdk bin is spelled out.
+#   - the claude CLI stores its OAuth in the macOS Keychain, and the keychain
+#     lookup fails without USER/LOGNAME set — measured: with only HOME+PATH it
+#     reports "Not logged in · Please run /login". launchd does not set them.
+#
+# So both are pinned here AND in the plist. Verify a change with
+# `launchctl start com.stevenjacobs.finance-nightly`, not just a shell run — an
+# interactive shell hides exactly the variables that break under launchd.
 set -uo pipefail
+
+export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export USER="${USER:-$(id -un)}"
+export LOGNAME="${LOGNAME:-$USER}"
 
 REPO="${FINANCE_REPO:-$HOME/conductor/repos/personal}"
 CLAUDE_BIN="${CLAUDE_BIN:-/opt/homebrew/bin/claude}"
@@ -55,21 +67,43 @@ fi
 log ""
 log "## 3. Agent review"
 
+# A headless agent has nobody to approve a tool call, so permissions have to be
+# settled up front or it stalls having done nothing.
+#
+#   autonomous    -> bypassPermissions. It genuinely needs to write (add-rule.sh,
+#                    add-override.sh, deploy.sh), so the guardrail is the mandate
+#                    below plus the fact that every write is logged and revertible.
+#   diagnose-only -> an explicit allowlist, so "no writes" is ENFORCED by the
+#                    harness rather than trusted to the prompt. query.sh is
+#                    read-only; the write scripts are simply not reachable.
 if [[ "${NIGHTLY_AGENT_AUTONOMOUS:-1}" == "1" ]]; then
-  MANDATE="You MAY apply clear-cut classification fixes (rules, overrides) and
-re-deploy. Log every write. Leave anything ambiguous for a human and flag it."
+  MANDATE="You MAY apply clear-cut classification fixes (rules, overrides,
+vendor-category mappings) and re-deploy. Log every write in the report. A wrong
+mapping is worse than none: it applies confidently to every future transaction
+and nothing flags it — so leave anything genuinely ambiguous (mixed-basket
+merchants, peer payments, one-off vendors) UNMAPPED and list it for Steven."
+  PERM=(--permission-mode bypassPermissions)
 else
   MANDATE="Apply NO classification writes tonight. Diagnose only and list the
 exact fixes a human should apply in a Claude Code session."
+  PERM=(--allowed-tools "Bash(./scripts/query.sh:*)" Read Grep Glob Write)
 fi
 
-"$CLAUDE_BIN" -p "You are the nightly finance steward, running headless with no
-human to ask. The mirror was just rebuilt and validated. Run the /finances
-update DIAGNOSIS: feed freshness, the stale-feed and silent-vendor checks, and
-the flagged review queues (gold.transaction_flow_review,
-gold.transaction_anomaly_review_queue). Write a short, plain report of what needs
-attention. ${MANDATE} Keep raw merchant/amount detail in .context only — never
-commit it." >>"$REPORT" 2>&1
+"$CLAUDE_BIN" -p "${PERM[@]}" "You are the nightly finance steward, running
+headless with no human to ask. The mirror was just rebuilt and validated. Follow
+the finances skill (.claude/skills/finances). Run the update-database diagnosis:
+mirror-level health FIRST (if nothing has arrived on ANY account for days the
+mirror itself is broken and nothing else below means anything), then per-account
+feed freshness judged against other accounts, the silent-vendor check, and the
+flagged queues (gold.transaction_flow_review,
+gold.transaction_anomaly_review_queue). Then write a short, plain report: what
+you changed, what needs Steven, what you deliberately left alone. ${MANDATE}
+Keep raw merchant/amount detail in .context only — never commit it." >>"$REPORT" 2>&1
+AGENT_RC=$?
 
 log ""
+if [[ $AGENT_RC -ne 0 ]]; then
+  log "**AGENT STEP FAILED (exit $AGENT_RC)** — rebuild+validate still succeeded."
+fi
 log "Done — report at $REPORT"
+exit $AGENT_RC
