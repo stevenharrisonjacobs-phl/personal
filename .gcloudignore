@@ -1,0 +1,27 @@
+# Build context for the door image. Everything the Dockerfile does not COPY
+# should be excluded — especially anything holding secrets or row-level data.
+.git/
+.gitignore
+.env
+.env.example
+.context/
+__pycache__/
+*.py[cod]
+.venv/
+.secrets/
+client_secret*.json
+
+# Repo content the door image does not need.
+docs/
+projects/
+sql/
+scripts/
+tests/
+cowork/
+orchestration/
+.claude/
+.codex/
+.cursor/
+.agents/
+README.md
+AGENTS.md
