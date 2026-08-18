@@ -44,6 +44,28 @@ The fix for a broken feed is **reconnecting that account in Tiller**. It is a
 source-side action: nothing in the repo changes, and the mirror backfills on its
 own afterward. Say that rather than proposing a code change.
 
+## Accounts Steven has already ruled on — do NOT re-flag
+
+A dead card and a broken feed look identical from here: both are just an account
+that stopped posting. So every run rediscovered these and asked again. Steven has
+been asked more than once; stop asking.
+
+| Account | Mask | State |
+|---|---|---|
+| Citi AAdvantage | 2173 | **Closed.** Not a broken feed. Its last 47 txns (Jun 26 – Jul 8 2026) are real and complete. |
+| Citi AAdvantage | 5823 | **Closed.** Same story. |
+| Justworks Retirement Savings Plan for Bobsled | 7301 | **Old 401(k).** No longer contributed to, so no new transactions is correct. |
+
+`queries/source-freshness.sql` labels these in a `known_state` column, so the
+suppression is in the data rather than resting on whoever reads this file.
+
+**The PNC mortgage autopay is armed** (confirmed 2026-08-18). The Jun–Jul gap and
+the $9,520.59 catch-up on Aug 12 are settled history, already amortized across
+Jun–Aug. Do not raise it as an open question again.
+
+When a genuinely new account goes quiet, say so. When one of these does, say
+nothing.
+
 ## Accounts with no bank feed at all
 
 Some accounts are invisible to the mirror by nature and are tracked by hand:
