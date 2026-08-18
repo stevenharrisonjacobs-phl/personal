@@ -46,21 +46,45 @@ REPORT="$LOG_DIR/sync-$STAMP.md"
 
 log() { echo "$@" | tee -a "$REPORT"; }
 
+# deploy.sh echoes every statement it runs, which is ~100KB of SQL. Piping that
+# into the report buried the part a human actually reads. Each step now writes
+# its own log and the report carries a one-line verdict — plus the tail of the
+# log when something fails, so a failure is still legible without opening it.
+DEPLOY_LOG="$LOG_DIR/deploy-$STAMP.log"
+VALIDATE_LOG="$LOG_DIR/validate-$STAMP.log"
+
+fail_with_tail() { # fail_with_tail LOGFILE MESSAGE
+  log ""
+  log "**$2**"
+  log ""
+  log '```'
+  tail -25 "$1" >> "$REPORT"
+  log '```'
+  log ""
+  log "Full output: $1"
+}
+
 : > "$REPORT"
 log "# Nightly finance sync — $STAMP"
 log ""
 log "## 1. Rebuild (deploy.sh)"
-if ! ./scripts/deploy.sh >>"$REPORT" 2>&1; then
-  log ""
-  log "**DEPLOY FAILED — aborting before validate/agent.**"
+if ./scripts/deploy.sh >"$DEPLOY_LOG" 2>&1; then
+  log "OK — rebuilt. Full output: $DEPLOY_LOG"
+else
+  fail_with_tail "$DEPLOY_LOG" "DEPLOY FAILED — aborting before validate/agent."
   exit 1
 fi
 
 log ""
 log "## 2. Validate (validate.sh)"
-if ! ./scripts/validate.sh >>"$REPORT" 2>&1; then
-  log ""
-  log "**VALIDATION FAILED — aborting before agent.**"
+if ./scripts/validate.sh >"$VALIDATE_LOG" 2>&1; then
+  # The counts are small and genuinely worth reading, so they stay inline. bq
+  # writes its progress spinner with carriage returns, so the "Waiting on bqjob"
+  # text is not at the start of a line and an anchored pattern misses it.
+  tr '\r' '\n' < "$VALIDATE_LOG" \
+    | grep -v 'Waiting on bqjob' | grep -vE '^\+' | grep -v '^[[:space:]]*$' >> "$REPORT"
+else
+  fail_with_tail "$VALIDATE_LOG" "VALIDATION FAILED — aborting before agent."
   exit 1
 fi
 
@@ -94,16 +118,23 @@ exact fixes a human should apply in a Claude Code session."
   PERM=(--allowed-tools "Bash(./scripts/query.sh:*)" Read Grep Glob Write)
 fi
 
-"$CLAUDE_BIN" -p "${PERM[@]}" "You are the nightly finance steward, running
-headless with no human to ask. The mirror was just rebuilt and validated. Follow
-the finances skill (.claude/skills/finances). Run the update-database diagnosis:
-mirror-level health FIRST (if nothing has arrived on ANY account for days the
-mirror itself is broken and nothing else below means anything), then per-account
-feed freshness judged against other accounts, the silent-vendor check, and the
-flagged queues (gold.transaction_flow_review,
-gold.transaction_anomaly_review_queue). Then write a short, plain report: what
-you changed, what needs Steven, what you deliberately left alone. ${MANDATE}
-Keep raw merchant/amount detail in .context only — never commit it." >>"$REPORT" 2>&1
+PROMPT="You are the nightly finance steward, running headless with no human to
+ask. The mirror was just rebuilt and validated. Follow the finances skill
+(.claude/skills/finances). Run the update-database diagnosis: mirror-level health
+FIRST (if nothing has arrived on ANY account for days the mirror itself is broken
+and nothing else below means anything), then per-account feed freshness judged
+against other accounts, the silent-vendor check, and the flagged queues
+(gold.transaction_flow_review, gold.transaction_anomaly_review_queue). Then write
+a short, plain report: what you changed, what needs Steven, what you deliberately
+left alone. ${MANDATE} Keep raw merchant/amount detail in .context only — never
+commit it."
+
+# The prompt goes in on STDIN, not as a positional argument. --allowed-tools is
+# variadic (<tools...>), so a trailing prompt is swallowed as one more tool name
+# and claude exits with "Input must be provided either through stdin or as a
+# prompt argument". Measured 2026-08-17: this broke diagnose-only mode while
+# autonomous mode worked, because --permission-mode takes exactly one value.
+printf '%s' "$PROMPT" | "$CLAUDE_BIN" -p "${PERM[@]}" >>"$REPORT" 2>&1
 AGENT_RC=$?
 
 log ""
