@@ -1,0 +1,9 @@
+# Test-only dependencies. The door's tests are deliberately offline (no GCP, no
+# network), but they import door.finance_native, which imports the BigQuery
+# client at module scope — so the client has to be installed even though nothing
+# calls it.
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/python -m pytest tests/ -q
+pytest>=8
+google-cloud-bigquery>=3.25
