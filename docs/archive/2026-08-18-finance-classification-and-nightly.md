@@ -6,7 +6,7 @@
 
 - **Workspace:** kyiv (Conductor worktree — now archived/deleted)
 - **Branch:** `finance-reconcile` → MERGED to main (content landed via PRs #14–#23)
-- **Status at archive:** DONE / merged — one open loop, tracked as `kyiv-3bj`
+- **Status at archive:** DONE / merged. `kyiv-3bj` (the reauth blocker) was resolved by Steven mid-archive; three P2/P3 follow-ups remain, all raised by the nightly agent itself.
 
 ## What this did & why
 
@@ -72,17 +72,24 @@ autonomous finance agent over it.
 
 ## Next steps / open loops
 
-- [ ] **`kyiv-3bj` (P1) — the 3am job fails on gcloud reauth.** `bq` dies with
-      "Reauthentication failed. cannot prompt during non-interactive execution."
-      Steven's user credential needs periodic reauth; interactive sessions satisfy
-      it silently, unattended ones cannot. **Data freshness is NOT affected** — the
-      hourly BigQuery scheduled query runs server-side and keeps `gold.transactions`
-      current; what is lost is the nightly agent review. Fix is a service account:
-      create it, grant BigQuery Job User + Data Editor, **share the Tiller Google
-      Sheet with its email** (the step people miss — the rebuild reads the sheet),
-      then `gcloud auth activate-service-account`. Sheets-backed external tables via
-      a service account need the Drive scope wired correctly and that part is
-      fiddly. Steven executes the IAM and sheet-sharing steps.
+- [x] ~~`kyiv-3bj` — the 3am job failed on gcloud reauth.~~ **RESOLVED by Steven
+      on 2026-08-18** (commit `c6b49b8`), after this handoff was first drafted.
+      `nightly-sync.sh` now activates `NIGHTLY_SA_KEY` into a *throwaway*
+      `CLOUDSDK_CONFIG` dir — so it never rewrites the global gcloud account —
+      and points `GOOGLE_APPLICATION_CREDENTIALS` at the same key so `bq` carries
+      the Drive scope needed for the Sheets-backed external tables. Falls back to
+      the ambient user credential when `NIGHTLY_SA_KEY` is unset, so interactive
+      dev checkouts still work. Verified headless: `tiller-sync@` read 8,647 rows
+      and ran a full `deploy.sh` rebuild with no reauth.
+- [ ] **`kyiv-m62` — decide on `queries/silent-vendors.sql`** (uncommitted, in the
+      canonical repo). The finances skill mandates a silent-vendor check on every
+      update run, but no committed query implemented it, so each run re-derived it
+      ad hoc and would re-flag settled items forever. The nightly agent wrote one
+      following the `known_state` suppression pattern, with amounts bucketed rather
+      than printed since the file is committed. Awaiting Steven's call.
+- [ ] `kyiv-dbm` — confirm whether Martial Posture lapsed or was cancelled (it
+      resumed in August last year and has not yet this year).
+- [ ] `kyiv-0m3` — decide the end state for the Tiller residual, now a pure tail.
 - [ ] Optional: the other write scripts (`add-rule`, `add-override`,
       `add-vendor-override`, `add-flow-override`) still do one job per row. Only
       worth doing if a session starts using them heavily.
