@@ -156,15 +156,26 @@ what is already in the map and fix it. The movie-theatre ruling on 2026-08-17
 invalidated four rows written earlier that same session (AMC ×2, Cinemark,
 Fandango ×2); leaving them would have meant the map disagreed with itself.
 
+**Mixed-basket big-box goes to `home`.** Amazon, Walmart, Apple Store, Target.
+Steven's position (2026-08-17) is that they cannot be disentangled and `home` is
+the least-wrong bucket, so map them and stop re-raising it. This REPLACES the
+earlier "leave mixed baskets unmapped" guidance — unmapped meant they fell
+through to Tiller, which filed Apple Store and Walmart under Clothes & Grooming.
+A deliberate least-wrong answer beats an accidental wrong one.
+
 ## Judgment calls that still need him
 
-- **Big-box and marketplace** beyond Amazon (Target, Apple Store) — genuinely
-  mixed baskets. Leave unmapped; rules plus per-transaction overrides instead.
 - **Anything that is sometimes a business expense** — the household/business
   split is a `work_expenses` question, and it may deserve a rule with an
   account filter rather than a blanket merchant mapping.
 - **A `SUSPECT` row where the right answer is not obvious** — say what you found
   and stop, rather than guessing into a permanent mapping.
+- **A merchant whose descriptor does not identify it.** Look at the raw
+  `full_description`, the amount pattern and the account first — `TST*`/`SQ *`
+  prefixes mean a restaurant POS, a repeating identical amount means a
+  subscription. If it still will not resolve, ASK. "FSA" ran twice at exactly
+  $140 and turned out to be healthcare; no amount of inference would have got
+  there.
 
 ## Where Copilot sits now
 
