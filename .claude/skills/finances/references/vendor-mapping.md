@@ -144,6 +144,17 @@ coverage percentage advances.
 | Amazon | `home`. He accepts it cannot be disentangled — do not re-raise it |
 | Bare-"Venmo" bank debits | `internal_transfer`. The itemized Venmo feed carries the real spend, so counting both double-counts |
 | Experian | `media` |
+| **Movie theatres and movie tickets** (AMC, Cinemark, Fandango) | `recreation`, **not** `media` |
+| **Museums, zoos, playgrounds, kids venues** (Please Touch, Franklin Institute, Philadelphia Zoo, Smith Playground, Urban Air) | `kids_recreation` |
+| **Sports venues and sporting goods** (Subaru Park, Chestnut Hill Sports) | `recreation` |
+| **Betting and gambling** (FanDuel, sportsbooks) | `recreation` |
+| **Liquor stores** (Fine Wine & Good Spirits, state stores) | `groceries` |
+| Lowe's, Home Depot, hardware stores | `home` — see the everyday/projects split above |
+
+**A ruling applies backwards, not just forwards.** When Steven makes one, re-check
+what is already in the map and fix it. The movie-theatre ruling on 2026-08-17
+invalidated four rows written earlier that same session (AMC ×2, Cinemark,
+Fandango ×2); leaving them would have meant the map disagreed with itself.
 
 ## Judgment calls that still need him
 
