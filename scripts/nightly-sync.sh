@@ -19,9 +19,9 @@
 #
 # Auth, and why the environment below is explicit rather than inherited:
 #
-#   - deploy.sh needs gcloud authed as steven@plumgrowth.ai WITH Drive access
-#     (it reads the Tiller sheet), and needs bq + jq on PATH. launchd starts with
-#     essentially no PATH, so the google-cloud-sdk bin is spelled out.
+#   - deploy.sh needs gcloud authed WITH Drive access (it reads the Tiller sheet)
+#     and needs bq + jq on PATH. launchd starts with essentially no PATH, so the
+#     google-cloud-sdk bin is spelled out.
 #   - the claude CLI stores its OAuth in the macOS Keychain, and the keychain
 #     lookup fails without USER/LOGNAME set — measured: with only HOME+PATH it
 #     reports "Not logged in · Please run /login". launchd does not set them.
@@ -29,6 +29,23 @@
 # So both are pinned here AND in the plist. Verify a change with
 # `launchctl start com.stevenjacobs.finance-nightly`, not just a shell run — an
 # interactive shell hides exactly the variables that break under launchd.
+#
+# WHY A SERVICE ACCOUNT (NIGHTLY_SA_KEY): a *user* gcloud credential eventually
+# demands an interactive reauth that gcloud cannot satisfy in a headless run —
+# deploy.sh then dies with "Reauthentication failed. cannot prompt during
+# non-interactive execution." A service-account key never reauths, so setting
+# NIGHTLY_SA_KEY in .env to a downloaded key makes the job self-sufficient. Two
+# deliberate choices in the activation block below:
+#   * a THROWAWAY gcloud config dir (CLOUDSDK_CONFIG) so activating the SA never
+#     rewrites Steven's real ~/.config/gcloud active account, which would silently
+#     hijack his interactive gcloud after every nightly run;
+#   * GOOGLE_APPLICATION_CREDENTIALS pointed at the same key so bq's query over
+#     the Sheets-backed external table mints a token carrying the Drive scope.
+#     A service account gets that scope with no consent step — the only gate is
+#     that the Tiller sheet must be SHARED with the SA's email. That is the step
+#     people miss; a missing share reads as an opaque BigQuery access error.
+# If NIGHTLY_SA_KEY is unset the job falls back to the ambient user credential
+# (old behaviour), so an interactive dev checkout without the key still runs.
 set -uo pipefail
 
 export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -38,6 +55,31 @@ export LOGNAME="${LOGNAME:-$USER}"
 REPO="${FINANCE_REPO:-$HOME/conductor/repos/personal}"
 CLAUDE_BIN="${CLAUDE_BIN:-/opt/homebrew/bin/claude}"
 cd "$REPO" || { echo "nightly-sync: repo not found at $REPO" >&2; exit 1; }
+
+# NIGHTLY_SA_KEY lives in .env (gitignored). Source just enough to read it; both
+# deploy.sh and query.sh re-source .env fully via lib.sh, so this is only for the
+# activation decision below.
+if [[ -f "$REPO/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO/.env"
+  set +a
+fi
+
+if [[ -n "${NIGHTLY_SA_KEY:-}" ]]; then
+  [[ -f "$NIGHTLY_SA_KEY" ]] || {
+    echo "nightly-sync: NIGHTLY_SA_KEY is set but no key file at $NIGHTLY_SA_KEY" >&2
+    exit 1
+  }
+  SA_CONFIG_DIR="$(mktemp -d)"
+  trap 'rm -rf "$SA_CONFIG_DIR"' EXIT
+  export CLOUDSDK_CONFIG="$SA_CONFIG_DIR"
+  export GOOGLE_APPLICATION_CREDENTIALS="$NIGHTLY_SA_KEY"
+  if ! gcloud auth activate-service-account --key-file="$NIGHTLY_SA_KEY" >/dev/null 2>&1; then
+    echo "nightly-sync: failed to activate service account from $NIGHTLY_SA_KEY" >&2
+    exit 1
+  fi
+fi
 
 STAMP="$(date +%Y-%m-%d)"
 LOG_DIR="$REPO/.context/nightly"
