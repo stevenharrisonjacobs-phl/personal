@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 load_env
-require_commands bq
+require_commands bq python3
 
 TABLE="\`${GCP_PROJECT_ID}.${GOLD_DATASET}.vendor_category_map\`"
 CATEGORIES="\`${GCP_PROJECT_ID}.${GOLD_DATASET}.categories\`"
@@ -45,6 +45,57 @@ upsert() { # upsert VENDOR CATEGORY_ID NOTES
     "DELETE FROM $TABLE WHERE vendor_name = @vendor_name;
      INSERT INTO $TABLE (vendor_name, category_id, notes, enabled, created_at)
      VALUES (@vendor_name, @category_id, NULLIF(@notes, ''), TRUE, CURRENT_TIMESTAMP());" \
+    >/dev/null
+}
+
+# The whole batch in ONE BigQuery job.
+#
+# This used to loop `upsert` per row. Every bq job carries a few seconds of fixed
+# scheduling latency no matter how small the write, so a 600-row session spent
+# ~30 minutes of pure round-trip. It is also not atomic: a failure halfway leaves
+# a half-applied batch, which the validate-first check exists to avoid.
+#
+# Rows travel as a single ARRAY<STRUCT> query parameter rather than interpolated
+# SQL, so a merchant named "Dunkin'" or "Chickies & Petes" cannot break — or
+# rewrite — the statement. Python builds the JSON because it escapes correctly.
+upsert_batch() { # upsert_batch TSV_FILE
+  local rows_json
+  rows_json="$(python3 - "$1" <<'PY'
+import csv, json, sys
+rows = []
+with open(sys.argv[1], newline='') as fh:
+    for rec in csv.reader(fh, delimiter='\t', quoting=csv.QUOTE_NONE):
+        if not rec or not rec[0].strip() or rec[0].lstrip().startswith('#'):
+            continue
+        rows.append({
+            "vendor_name": rec[0],
+            "category_id": rec[1] if len(rec) > 1 else "",
+            "notes":       rec[2] if len(rec) > 2 else "",
+        })
+print(json.dumps(rows))
+PY
+)"
+
+  bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
+    --use_legacy_sql=false --quiet \
+    --parameter="rows:ARRAY<STRUCT<vendor_name STRING,category_id STRING,notes STRING>>:$rows_json" \
+    "MERGE $TABLE AS t
+     USING (
+       -- Last occurrence wins, matching the old loop. Without this a file that
+       -- names the same merchant twice aborts the MERGE: BigQuery refuses to
+       -- update one target row from two source rows.
+       SELECT * EXCEPT(rn) FROM (
+         SELECT r.*, ROW_NUMBER() OVER (PARTITION BY r.vendor_name ORDER BY off DESC) AS rn
+         FROM UNNEST(@rows) AS r WITH OFFSET off
+       ) WHERE rn = 1
+     ) AS s
+     ON t.vendor_name = s.vendor_name
+     WHEN MATCHED THEN UPDATE SET
+       category_id = s.category_id,
+       notes       = NULLIF(s.notes, ''),
+       enabled     = TRUE
+     WHEN NOT MATCHED THEN INSERT (vendor_name, category_id, notes, enabled, created_at)
+       VALUES (s.vendor_name, s.category_id, NULLIF(s.notes, ''), TRUE, CURRENT_TIMESTAMP());" \
     >/dev/null
 }
 
@@ -79,11 +130,11 @@ if [[ "$1" == "--batch" ]]; then
   applied=0
   while IFS=$'\t' read -r vendor category notes || [[ -n "$vendor" ]]; do
     [[ -z "$vendor" || "$vendor" == \#* ]] && continue
-    upsert "$vendor" "$category" "${notes:-}"
     applied=$((applied + 1))
     printf '  %-40s -> %s\n' "$vendor" "$category"
   done < "$2"
-  echo "Mapped $applied merchant(s)."
+  upsert_batch "$2"
+  echo "Mapped $applied merchant(s) in one job."
 else
   [[ $# -ge 2 && $# -le 3 ]] || usage
   if ! is_valid "$2"; then
