@@ -115,6 +115,10 @@ LEFT JOIN `__PROJECT_ID__.__GOLD_DATASET__.categories` AS cur_cat
 LEFT JOIN mapped AS mv
   ON STARTS_WITH(LOWER(REGEXP_REPLACE(r.vendor_name, r'[^a-zA-Z0-9]', '')), mv.mapped_key)
  AND LENGTH(mv.mapped_key) >= 6
+ -- Never suggest aliasing a merchant to itself. A merchant mapped since the last
+ -- rebuild still reports classification_source = 'tiller', so without this it
+ -- appears in the queue matched against its own map row and reads as an alias.
+ AND mv.mapped_key != LOWER(REGEXP_REPLACE(r.vendor_name, r'[^a-zA-Z0-9]', ''))
 QUALIFY ROW_NUMBER() OVER (
   PARTITION BY r.vendor_name ORDER BY LENGTH(COALESCE(mv.mapped_key, '')) DESC
 ) = 1
