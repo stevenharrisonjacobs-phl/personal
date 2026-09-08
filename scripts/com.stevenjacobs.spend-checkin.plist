@@ -32,6 +32,9 @@
        makes every extra fire a no-op, so this is safe to leave on. -->
   <key>RunAtLoad</key><true/>
 
+  <!-- launchd does NOT create parent directories for these paths; run
+       `mkdir -p ~/conductor/repos/personal/.context/checkin` when installing,
+       or the first fire's logs are silently lost. -->
   <key>StandardOutPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/checkin/launchd.out.log</string>
   <key>StandardErrorPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/checkin/launchd.err.log</string>
 </dict>

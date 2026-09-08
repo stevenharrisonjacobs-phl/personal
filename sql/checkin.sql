@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__FINANCE_DATASET__.checkin_reports` 
   consumed_checkpoint TIMESTAMP,
   window_start TIMESTAMP NOT NULL,
   window_end TIMESTAMP NOT NULL,
-  -- 'success' | 'failed' | 'skipped_duplicate'
+  -- 'success' | 'failed' (a duplicate fire is a MERGE no-op, not a row)
   status STRING NOT NULL,
   fail_reason STRING,
   -- Per-source detail: {mirror|vantage|live_costs|mercury: {window_start,
