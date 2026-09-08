@@ -63,7 +63,7 @@ if [[ -z "${CLOUDSDK_PYTHON:-}" ]]; then
 fi
 
 REPO="${FINANCE_REPO:-$HOME/conductor/repos/personal}"
-CLAUDE_BIN="${CLAUDE_BIN:-/opt/homebrew/bin/claude}"
+CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 cd "$REPO" || { echo "nightly-sync: repo not found at $REPO" >&2; exit 1; }
 
 # NIGHTLY_SA_KEY lives in .env (gitignored). Source just enough to read it; both
