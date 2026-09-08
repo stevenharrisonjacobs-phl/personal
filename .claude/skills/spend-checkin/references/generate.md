@@ -81,13 +81,19 @@ state (overdue / upcoming). Overdue first.
 
 ## 6. Other subscriptions — Mercury
 
-Through the Mercury MCP (read-only): pull transactions for the Mercury
-per-source window on the transaction's **system-created timestamp** (arrival
-axis, mirroring the mirror's `date_added` rationale). Count only **posted**
-transactions; note the count of pending ones without amounts. Aggregate per
-counterparty: venture tag via `context/mercury-mapping.md` (case-insensitive
-substring; no match → `unmapped`, listed for review with a one-line "say 'map
-X to <venture>'" hint), summed amount, transaction count.
+Through the Mercury MCP (read-only): pull with `listTransactions` using
+`postedStart`/`postedEnd` for the Mercury per-source window — results carry
+`postedAt` only (settlement time, the arrival axis; the server itself says
+never to filter on created dates). Count only `status: sent`; note the count
+of pending authorizations without amounts. **Apply the counting rules in
+`context/mercury-mapping.md`**: spend = `creditCardTransaction` rows plus
+genuine checking outflows; exclude the `IO AUTOPAY` settlement pair and the
+ignore-listed internal/inflow counterparties (counting the settlement AND the
+card charges double-counts every subscription); the Bobsled payroll inflow
+gets a one-line Notes mention, never a spend entry. Aggregate per
+counterparty: venture tag via the mapping (case-insensitive substring; no
+match → `unmapped`, listed for review with a one-line "say 'map X to
+<venture>'" hint), summed amount, transaction count.
 
 ## 7. Compose `report_md`
 
