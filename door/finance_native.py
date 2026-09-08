@@ -159,6 +159,10 @@ SOURCES: dict[str, dict[str, str]] = {
         "grain": "accrual line",
         "summary": "Manual accrual definitions feeding gold.v_accrued_costs.",
     },
+    f"{FINANCE}.checkin_reports": {
+        "grain": "daily check-in run",
+        "summary": "One row per daily spend check-in run: window, per-source status/totals JSON, and the rendered report_md. For the morning report, prefer the latest-spend-checkin saved query — it serves the newest status='success' row.",
+    },
     f"{FINANCE}.assumptions": {
         "grain": "assumption",
         "summary": "Projection assumptions (rates, growth, planned changes). State which assumptions a projection used.",

@@ -38,6 +38,8 @@ OK = f"SELECT 1 FROM `{fn.PROJECT}.{fn.GOLD}.transactions`"
         OK + ";",
         # Whitelisted names inside string literals must not be mistaken for refs.
         f"SELECT 'tiller_raw.transactions_external' AS s FROM {fn.GOLD}.transactions",
+        # The daily spend check-in report table is served through the door.
+        f"SELECT report_md FROM `{fn.PROJECT}.{fn.FINANCE}.checkin_reports` WHERE status = 'success'",
     ],
 )
 def test_accepts_governed_reads(sql):
