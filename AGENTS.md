@@ -6,8 +6,12 @@ personal project — keep governance light and just get the work done.
 ## Notes
 
 - Tiller and `tiller_raw` are the upstream source of truth; the underlying data
-  is edited in Tiller / the Google Sheet, not here. Everything downstream
-  (`finance.*`, `gold.*`) is derived and safe to rebuild via `./scripts/deploy.sh`.
+  is edited in Tiller / the Google Sheet, not here. Downstream `finance.*` /
+  `gold.*` is derived and safe to rebuild via `./scripts/deploy.sh` — EXCEPT the
+  durable operational tables (`classification_rules`, `transaction_overrides`,
+  `manual_*`, `vendor_rules`, `vendor_aliases`, `checkin_reports`, and the other
+  `CREATE TABLE IF NOT EXISTS` targets): those hold state that exists nowhere
+  else and must never be dropped or treated as rebuildable.
 - `./scripts/query.sh <file.sql>` is a convenient runner, but ad-hoc `bq` is fine
   too. Run deploys, rule, and override changes directly when they're warranted —
   no need to ask first.
