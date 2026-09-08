@@ -18,6 +18,16 @@
 # Usage: spend-checkin-costs.sh --start 2026-09-07T10:00:00Z --end 2026-09-08T10:00:00Z
 set -uo pipefail
 
+# gcloud/bq need Python 3.10+; the system python3 is 3.9 and the Cloud SDK
+# dies on a SyntaxError under launchd's bare PATH (measured 2026-09-08 — the
+# interactive shells hid it because the python.org 3.13 build led their PATH).
+# Pin the newest CPython this machine has; extend the list when Python moves.
+if [[ -z "${CLOUDSDK_PYTHON:-}" ]]; then
+  for _py in /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3; do
+    [[ -x "$_py" ]] && export CLOUDSDK_PYTHON="$_py" && break
+  done
+fi
+
 START="" END=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
