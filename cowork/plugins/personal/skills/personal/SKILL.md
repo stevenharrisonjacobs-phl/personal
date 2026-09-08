@@ -40,7 +40,8 @@ two transports means two answers to reconcile and no way to tell which is right.
 | `run_finance_query(sql, max_rows?, dry_run?)` | one capped read-only SELECT/WITH |
 
 Reach for `saved_query` before novel SQL: a saved query already encodes the sign
-conventions and exclusions for its question.
+conventions and exclusions for its question. The morning spend report is
+`saved_query("latest-spend-checkin")` — the `/spend-checkin` skill wraps it.
 
 Errors come back as `{status, error}`. **Quote them verbatim.** A `forbidden` is
 never retried and never routed around. If the tools are missing entirely, the
