@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.stevenjacobs.spend-checkin</string>
+  <!-- caffeinate holds a sleep assertion for the run's duration, so a Mac
+       woken by a pmset schedule (or briefly opened) cannot doze off mid-run.
+       For true lid-closed 6am fires on AC power, pair with a daily wake:
+         sudo pmset repeat wakeorpoweron MTWRFSU 05:58:00 -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>-s</string>
+    <string>/bin/bash</string>
+    <string>/Users/stevenjacobs/conductor/repos/personal/scripts/morning-checkin.sh</string>
+  </array>
+
+  <!-- launchd starts with almost no environment. gcloud/bq must be on PATH,
+       and USER/LOGNAME must be set or the claude CLI cannot read its OAuth
+       token out of the macOS Keychain ("Not logged in"). Pinned here AND in
+       the script — same discipline as the finance nightly. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/stevenjacobs/.local/bin:/opt/homebrew/share/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/stevenjacobs</string>
+    <key>USER</key><string>stevenjacobs</string>
+    <key>LOGNAME</key><string>stevenjacobs</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>6</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <!-- A Mac asleep at 6:00 runs the missed job on wake. A Mac powered OFF at
+       6:00 gets it at next login via RunAtLoad — the script's today-guard
+       makes every extra fire a no-op, so this is safe to leave on. -->
+  <key>RunAtLoad</key><true/>
+
+  <!-- launchd does NOT create parent directories for these paths; run
+       `mkdir -p ~/conductor/repos/personal/.context/checkin` when installing,
+       or the first fire's logs are silently lost. -->
+  <key>StandardOutPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/checkin/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/stevenjacobs/conductor/repos/personal/.context/checkin/launchd.err.log</string>
+</dict>
+</plist>

@@ -24,7 +24,7 @@ DEST="cowork/plugins/personal/skills"
 #   morning, inbound, shows, weather — they shell out to scripts/*.py for Gmail,
 #     Calendar, iMessage and Spotify credentials the door does not carry yet.
 #     They join when the door grows those domains (spec §8).
-SKILLS=(personal finances)
+SKILLS=(personal finances spend-checkin)
 
 check_only=0
 [ "${1:-}" = "--check" ] && check_only=1

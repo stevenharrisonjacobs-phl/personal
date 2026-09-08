@@ -25,6 +25,7 @@ required_tables=(
   "$GCP_PROJECT_ID:$FINANCE_DATASET.balance_history"
   "$GCP_PROJECT_ID:$FINANCE_DATASET.classification_rules"
   "$GCP_PROJECT_ID:$FINANCE_DATASET.transaction_overrides"
+  "$GCP_PROJECT_ID:$FINANCE_DATASET.checkin_reports"
   "$GCP_PROJECT_ID:$FINANCE_DATASET.v_transactions_classified"
   "$GCP_PROJECT_ID:$FINANCE_DATASET.v_spending"
   "$GCP_PROJECT_ID:$FINANCE_DATASET.v_current_balances"
