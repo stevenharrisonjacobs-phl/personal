@@ -3,8 +3,15 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.stevenjacobs.spend-checkin</string>
+  <!-- caffeinate holds a sleep assertion for the run's duration, so a Mac
+       woken by a pmset schedule (or briefly opened) cannot doze off mid-run.
+       For true lid-closed 6am fires on AC power, pair with a daily wake:
+         sudo pmset repeat wakeorpoweron MTWRFSU 05:58:00 -->
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>-s</string>
     <string>/bin/bash</string>
     <string>/Users/stevenjacobs/conductor/repos/personal/scripts/morning-checkin.sh</string>
   </array>
