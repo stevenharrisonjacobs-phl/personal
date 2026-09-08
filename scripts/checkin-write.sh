@@ -15,18 +15,18 @@
 #       Timestamps are RFC3339/ISO-8601 UTC strings.
 #
 #   checkin-write.sh failed --reason "<one line>"
-#       Wrapper-owned failure recording (R11): needs NO composed artifacts.
+#       Wrapper-owned failure recording: needs NO composed artifacts.
 #       Resolves the checkpoint itself and writes a minimal status='failed'
 #       row whose window is zero-length, so it can never advance anything.
 #
-# Integrity contract (KTD8):
+# Integrity contract:
 #   * MERGE matches ONLY status='success' rows for the same window_start, so
 #     a double fire (calendar + wake, manual + scheduled) lands zero or one
 #     success row — and a failed row never blocks a later success.
 #   * The checkpoint is re-resolved immediately before the write; if it moved
 #     since the payload was composed, the write aborts loudly.
 #   * Append-only: no UPDATE path exists here. Recovery is BQ time travel.
-#   * Content checks (R14): report_md under the length cap, and no
+#   * Content checks: report_md under the length cap, and no
 #     account-number-like digit runs (masked forms like ****1234 pass).
 #   * Headline totals are recomputed from the per-source payload and the
 #     write refuses on mismatch — served numbers always trace to source pulls.
@@ -56,67 +56,11 @@ case "$MODE" in
     tmp_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_dir"' EXIT
 
-    # Validate shape, windows, content rules, and recompute totals. Writes one
-    # file per bq parameter into $tmp_dir so values with newlines stay intact.
-    python3 - "$PAYLOAD" "$tmp_dir" <<'PYEOF'
-import json, re, sys
-payload_path, out_dir = sys.argv[1], sys.argv[2]
-p = json.load(open(payload_path))
-
-errors = []
-for field in ("run_ts", "window_start", "window_end", "sources", "totals", "report_md"):
-    if field not in p:
-        errors.append(f"missing field: {field}")
-if errors:
-    sys.exit("checkin-write: invalid payload: " + "; ".join(errors))
-
-ts = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|\+00:?00)$")
-for field in ("run_ts", "window_start", "window_end"):
-    if not ts.match(str(p[field])):
-        errors.append(f"{field} is not a UTC timestamp: {p[field]}")
-if p.get("consumed_checkpoint") and not ts.match(str(p["consumed_checkpoint"])):
-    errors.append("consumed_checkpoint is not a UTC timestamp")
-if str(p["window_end"]) <= str(p["window_start"]):
-    errors.append("window_end must be after window_start")
-if str(p["run_ts"]) < str(p["window_end"]):
-    errors.append("run_ts must be at or after window_end")
-
-md = p["report_md"]
-if len(md) > 100_000:
-    errors.append(f"report_md over length cap: {len(md)} > 100000")
-digit_runs = re.findall(r"\d{9,}", md)
-if digit_runs:
-    errors.append(f"report_md contains account-number-like digit runs: {digit_runs[:3]}")
-
-# Headline totals must equal the per-source totals they claim to summarize.
-mapping = {"personal_cash": "mirror", "mercury_cash": "mercury",
-           "cloud_billed": "vantage", "cloud_live": "live_costs"}
-for headline, source in mapping.items():
-    h = p["totals"].get(headline)
-    s = (p["sources"].get(source) or {}).get("total")
-    if h is None and s is None:
-        continue
-    if (h is None) != (s is None):
-        errors.append(f"totals.{headline} and sources.{source}.total disagree on presence")
-    elif abs(float(h) - float(s)) > 0.01:
-        errors.append(f"totals.{headline}={h} != sources.{source}.total={s}")
-
-if errors:
-    sys.exit("checkin-write: refused: " + "; ".join(errors))
-
-out = {
-    "run_ts": str(p["run_ts"]),
-    "consumed_checkpoint": str(p.get("consumed_checkpoint") or "none"),
-    "window_start": str(p["window_start"]),
-    "window_end": str(p["window_end"]),
-    "sources": json.dumps(p["sources"]),
-    "totals": json.dumps(p["totals"]),
-    "report_md": md,
-}
-for name, value in out.items():
-    with open(f"{out_dir}/{name}", "w") as f:
-        f.write(value)
-PYEOF
+    # Validate shape, windows, contiguity, content rules, and totals via the
+    # tested module (tests/test_checkin_validate.py). Writes one file per bq
+    # parameter into $tmp_dir, all timestamps canonicalized to %Y-%m-%dT%H:%M:%SZ
+    # so the checkpoint string comparison below is sound.
+    python3 "$SCRIPT_DIR/checkin_validate.py" "$PAYLOAD" "$tmp_dir"
 
     # Abort if the checkpoint moved since the payload was composed — another
     # run landed between resolution and write.
@@ -149,7 +93,7 @@ PYEOF
                @window_start, @window_end,
                'success', PARSE_JSON(@sources), PARSE_JSON(@totals), @report_md)"
 
-    # Confirm the row is there (completion signal = the artifact, KTD7).
+    # Confirm the row is there (completion signal = the artifact, not the exit code).
     bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" --format=csv query \
       --use_legacy_sql=false --quiet \
       --parameter="window_start:TIMESTAMP:$(<"$tmp_dir/window_start")" \

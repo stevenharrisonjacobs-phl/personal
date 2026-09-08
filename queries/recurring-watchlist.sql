@@ -13,16 +13,23 @@
 -- known failure mode: three mortgage payments once went unnoticed for a
 -- quarter because nothing watched for an ABSENT transaction.
 WITH monthly_vendors AS (
+  -- Cadence stats (active_months, usual_day, typical_amount) come from prior
+  -- FULL months only, but last_hit sees current-month rows too — otherwise a
+  -- vendor that already paid this month still flags overdue (the scan must
+  -- see the payment it is checking for).
   SELECT
     vendor_name,
-    COUNT(DISTINCT DATE_TRUNC(transaction_date, MONTH)) AS active_months,
+    COUNT(DISTINCT IF(transaction_date < DATE_TRUNC(CURRENT_DATE(), MONTH),
+                      DATE_TRUNC(transaction_date, MONTH), NULL)) AS active_months,
     MAX(transaction_date) AS last_hit,
-    CAST(APPROX_QUANTILES(EXTRACT(DAY FROM transaction_date), 2)[OFFSET(1)] AS INT64) AS usual_day,
-    ROUND(AVG(flow_expense_amount), 0) AS typical_amount
+    CAST(APPROX_QUANTILES(
+      IF(transaction_date < DATE_TRUNC(CURRENT_DATE(), MONTH),
+         EXTRACT(DAY FROM transaction_date), NULL), 2)[OFFSET(1)] AS INT64) AS usual_day,
+    ROUND(AVG(IF(transaction_date < DATE_TRUNC(CURRENT_DATE(), MONTH),
+                 flow_expense_amount, NULL)), 0) AS typical_amount
   FROM `__PROJECT_ID__.__GOLD_DATASET__.transactions`
   WHERE flow_type = 'expense'
     AND transaction_date >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 6 MONTH)
-    AND transaction_date < DATE_TRUNC(CURRENT_DATE(), MONTH)
     AND vendor_name IS NOT NULL
   GROUP BY vendor_name
   HAVING active_months >= 4

@@ -66,7 +66,8 @@ if [[ -f "$SNAPFIX_SA" ]]; then
      )
      SELECT
        ROUND(SUM(IF(creation_time >= @win_start, total_bytes_processed, 0)) / POW(1024,4) * 6.25, 4) AS cost,
-       ROUND(SUM(IF(creation_time <  TIMESTAMP_SUB(@win_end, INTERVAL 7 DAY), total_bytes_processed, 0)) / POW(1024,4) * 6.25, 4) AS prev_cost,
+       ROUND(SUM(IF(creation_time < TIMESTAMP_SUB(@win_end, INTERVAL 7 DAY)
+                    AND creation_time < @win_start, total_bytes_processed, 0)) / POW(1024,4) * 6.25, 4) AS prev_cost,
        ARRAY(
          SELECT AS STRUCT CONCAT(t.dataset_id, '.', t.table_id) AS name,
                 ROUND(SUM(j.total_bytes_processed) / POW(1024,4) * 6.25, 4) AS cost
@@ -82,10 +83,12 @@ else
 fi
 
 # ---- LangSmith run costs, both windows in one pull --------------------------
-if [[ -n "${LANGSMITH_API_KEY:-}" && -d "$LANGGRAPH_DIR" ]]; then
+# uv lives in ~/.local/bin, which launchd's pinned PATH may not carry.
+UV_BIN="${UV_BIN:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
+if [[ -n "${LANGSMITH_API_KEY:-}" && -d "$LANGGRAPH_DIR" && -x "$UV_BIN" ]]; then
   ( cd "$LANGGRAPH_DIR" && \
     LANGSMITH_API_KEY="$LANGSMITH_API_KEY" WIN_START="$START" WIN_END="$END" \
-    uv run python - <<'PYEOF' > "$tmp_dir/langsmith.json" 2>"$tmp_dir/ls.err"
+    "$UV_BIN" run python - <<'PYEOF' > "$tmp_dir/langsmith.json" 2>"$tmp_dir/ls.err"
 import json, os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -124,11 +127,12 @@ PYEOF
 else
   [[ -z "${LANGSMITH_API_KEY:-}" ]] && echo "LANGSMITH_API_KEY missing from $SNAPFIX_ENV — LangSmith pull skipped" >> "$tmp_dir/errors"
   [[ ! -d "$LANGGRAPH_DIR" ]] && echo "langgraph dir missing at $LANGGRAPH_DIR — LangSmith pull skipped" >> "$tmp_dir/errors"
+  [[ ! -x "$UV_BIN" ]] && echo "uv not found at $UV_BIN — LangSmith pull skipped" >> "$tmp_dir/errors"
 fi
 
 # ---- Apify actor runs, both windows from one page ---------------------------
 if [[ -n "${APIFY_API_TOKEN:-}" ]]; then
-  curl -sf "https://api.apify.com/v2/actor-runs?desc=1&limit=500" \
+  curl -sf --connect-timeout 10 --max-time 60 "https://api.apify.com/v2/actor-runs?desc=1&limit=500" \
     -H "Authorization: Bearer $APIFY_API_TOKEN" > "$tmp_dir/apify_raw.json" \
   && WIN_START="$START" WIN_END="$END" python3 - "$tmp_dir/apify_raw.json" <<'PYEOF' > "$tmp_dir/apify.json" 2>"$tmp_dir/apify.err"
 import json, os, sys
