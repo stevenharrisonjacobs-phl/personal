@@ -2,10 +2,10 @@
 # spend-checkin-costs.sh — deterministic live-cost pulls for the daily spend
 # check-in: BigQuery scanning (snapfix-agents), LLM run costs via LangSmith,
 # and Apify actor runs. Each is pulled for the requested window AND the same
-# window seven days earlier (the week-over-week trend baseline, R3).
+# window seven days earlier (the week-over-week trend baseline).
 #
 # Emits ONE JSON object on stdout. Per-source failures never kill the script —
-# they land in .errors[] naming the missing env/key/path (KTD6: fail loudly by
+# they land in .errors[] naming the missing env/key/path (fail loudly by
 # name, never a bare "unavailable"). Row-level pull detail belongs in
 # .context/, where the caller redirects this output.
 #
@@ -102,7 +102,8 @@ top, notes = [], []
 # missing project is a note, never a dead pull.
 for project in ("Snapfix", "Snapfix-Agents"):
     try:
-        runs = list(client.list_runs(project_name=project, start_time=prev_start, is_root=True))
+        runs = list(client.list_runs(project_name=project, start_time=prev_start,
+                                     end_time=end, is_root=True))
     except Exception as exc:
         notes.append(f"project {project}: {type(exc).__name__}")
         continue

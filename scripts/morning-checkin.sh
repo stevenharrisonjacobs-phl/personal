@@ -2,7 +2,7 @@
 # morning-checkin.sh — the 6am daily spend check-in runner.
 #
 # Invoked by launchd (com.stevenjacobs.spend-checkin.plist). The WRAPPER owns
-# the run lifecycle (R11): locking, ordering against the finance nightly,
+# the run lifecycle: locking, ordering against the finance nightly,
 # the wall-clock watchdog, and — critically — failure recording. A hung or
 # dead agent session can never leave an unrecorded run, because the failed
 # row is written HERE, deterministically, not by the agent.
@@ -19,7 +19,7 @@
 #   4. watchdog          — the agent gets ~25 min of wall clock (macOS ships
 #                          no timeout(1); a background killer is the primitive).
 #
-# The agent session runs under least privilege (the plan's KTD7): prompt on
+# The agent session runs under least privilege: prompt on
 # STDIN (the nightly's variadic --allowed-tools lesson), an explicit tool
 # allowlist — read-side Vantage tools only; the Vantage MCP ships destructive
 # writes an unattended session must not hold — and an MCP surface pinned to
@@ -41,7 +41,7 @@ CLAUDE_BIN="${CLAUDE_BIN:-/opt/homebrew/bin/claude}"
 AGENT_BUDGET_SECS="${AGENT_BUDGET_SECS:-1500}"
 cd "$REPO" || { echo "morning-checkin: repo not found at $REPO" >&2; exit 1; }
 
-# .env carries GCP config and (once U1 lands it) NIGHTLY_SA_KEY.
+# .env carries GCP config and NIGHTLY_SA_KEY (the headless service-account key).
 if [[ -f "$REPO/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -69,6 +69,16 @@ fail_row() { # fail_row REASON
     || echo "morning-checkin: could not record failed row ($1)" >> "$LOG_DIR/run-$STAMP.log"
 }
 
+# Count of today's (ET) successful report rows — the today-guard and the
+# post-agent completion signal are the same question asked twice.
+todays_success_count() {
+  bq --project_id="${GCP_PROJECT_ID:-steven-tiller-finance-2026}" --location="${BQ_LOCATION:-US}" \
+    --format=csv query --use_legacy_sql=false --quiet \
+    "SELECT COUNT(*) FROM \`${GCP_PROJECT_ID:-steven-tiller-finance-2026}.${FINANCE_DATASET:-finance}.checkin_reports\`
+     WHERE status = 'success'
+       AND DATE(run_ts, 'America/New_York') = '${TODAY_ET}'" 2>/dev/null | tail -1
+}
+
 # ── 1. lock ──────────────────────────────────────────────────────────────────
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   # A lock older than 2h is a corpse from a killed run; take it over.
@@ -85,11 +95,7 @@ trap cleanup EXIT
 
 # ── 2. today-guard ───────────────────────────────────────────────────────────
 TODAY_ET="$(TZ=America/New_York date +%Y-%m-%d)"
-already="$(bq --project_id="${GCP_PROJECT_ID:-steven-tiller-finance-2026}" --location="${BQ_LOCATION:-US}" \
-  --format=csv query --use_legacy_sql=false --quiet \
-  "SELECT COUNT(*) FROM \`${GCP_PROJECT_ID:-steven-tiller-finance-2026}.${FINANCE_DATASET:-finance}.checkin_reports\`
-   WHERE status = 'success'
-     AND DATE(run_ts, 'America/New_York') = '${TODAY_ET}'" 2>/dev/null | tail -1)"
+already="$(todays_success_count)"
 if [[ "${already:-0}" =~ ^[1-9] ]]; then
   echo "morning-checkin: today's report already exists; exiting" >> "$LOG_DIR/run-$STAMP.log"
   exit 0
@@ -149,11 +155,7 @@ wait "$AGENT_PID"; AGENT_RC=$?
 kill "$WATCHDOG_PID" 2>/dev/null; wait "$WATCHDOG_PID" 2>/dev/null
 
 # ── completion signal = the artifact, not the exit code ──────────────────────
-landed="$(bq --project_id="${GCP_PROJECT_ID:-steven-tiller-finance-2026}" --location="${BQ_LOCATION:-US}" \
-  --format=csv query --use_legacy_sql=false --quiet \
-  "SELECT COUNT(*) FROM \`${GCP_PROJECT_ID:-steven-tiller-finance-2026}.${FINANCE_DATASET:-finance}.checkin_reports\`
-   WHERE status = 'success'
-     AND DATE(run_ts, 'America/New_York') = '${TODAY_ET}'" 2>/dev/null | tail -1)"
+landed="$(todays_success_count)"
 
 if [[ "${landed:-0}" =~ ^[1-9] ]]; then
   echo "morning-checkin: report landed (agent exit $AGENT_RC)" >> "$LOG_DIR/run-$STAMP.log"

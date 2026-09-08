@@ -1,5 +1,5 @@
 -- Recurring charges that have NOT hit their expected window — the "keep an
--- eye on" section of the daily spend check-in (R15 of the check-in plan).
+-- eye on" section of the daily spend check-in per the check-in plan.
 --
 -- Cadence is inferred from vendor history in gold.transactions: a vendor that
 -- posted an expense in at least 4 of the last 6 full months is treated as
@@ -26,28 +26,34 @@ WITH monthly_vendors AS (
     AND vendor_name IS NOT NULL
   GROUP BY vendor_name
   HAVING active_months >= 4
+),
+judged AS (
+  -- Each watch condition computed exactly once; the display string, the row
+  -- filter, and the sort all read these flags instead of restating them.
+  SELECT
+    v.*,
+    (EXTRACT(DAY FROM CURRENT_DATE()) > v.usual_day + 5
+     AND v.last_hit < DATE_TRUNC(CURRENT_DATE(), MONTH)) AS overdue_this_month,
+    DATE_DIFF(CURRENT_DATE(), v.last_hit, DAY) > 35 AS overdue_full_cycle,
+    (EXTRACT(DAY FROM CURRENT_DATE()) BETWEEN v.usual_day - 3 AND v.usual_day + 5
+     AND v.last_hit < DATE_TRUNC(CURRENT_DATE(), MONTH)) AS upcoming_window
+  FROM monthly_vendors AS v
 )
 SELECT
-  v.vendor_name,
-  v.usual_day AS usual_day_of_month,
-  v.last_hit,
-  DATE_DIFF(CURRENT_DATE(), v.last_hit, DAY) AS days_since_last,
-  v.typical_amount,
+  vendor_name,
+  usual_day AS usual_day_of_month,
+  last_hit,
+  DATE_DIFF(CURRENT_DATE(), last_hit, DAY) AS days_since_last,
+  typical_amount,
   CASE
-    WHEN EXTRACT(DAY FROM CURRENT_DATE()) > v.usual_day + 5
-         AND v.last_hit < DATE_TRUNC(CURRENT_DATE(), MONTH)
-      THEN CONCAT('overdue — usually hits by day ', CAST(v.usual_day AS STRING), ', nothing this month')
-    WHEN DATE_DIFF(CURRENT_DATE(), v.last_hit, DAY) > 35
+    WHEN overdue_this_month
+      THEN CONCAT('overdue — usually hits by day ', CAST(usual_day AS STRING), ', nothing this month')
+    WHEN overdue_full_cycle
       THEN 'overdue — more than a full cycle since last hit'
-    ELSE CONCAT('upcoming — expected around day ', CAST(v.usual_day AS STRING))
+    ELSE CONCAT('upcoming — expected around day ', CAST(usual_day AS STRING))
   END AS watch_state
-FROM monthly_vendors AS v
-WHERE
-  (EXTRACT(DAY FROM CURRENT_DATE()) > v.usual_day + 5
-   AND v.last_hit < DATE_TRUNC(CURRENT_DATE(), MONTH))
-  OR DATE_DIFF(CURRENT_DATE(), v.last_hit, DAY) > 35
-  OR (EXTRACT(DAY FROM CURRENT_DATE()) BETWEEN v.usual_day - 3 AND v.usual_day + 5
-      AND v.last_hit < DATE_TRUNC(CURRENT_DATE(), MONTH))
+FROM judged
+WHERE overdue_this_month OR overdue_full_cycle OR upcoming_window
 ORDER BY
-  CASE WHEN STARTS_WITH(watch_state, 'overdue') THEN 0 ELSE 1 END,
-  v.typical_amount DESC;
+  IF(overdue_this_month OR overdue_full_cycle, 0, 1),
+  typical_amount DESC;
