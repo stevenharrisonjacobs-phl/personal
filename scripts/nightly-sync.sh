@@ -52,6 +52,16 @@ export PATH="/opt/homebrew/share/google-cloud-sdk/bin:/opt/homebrew/bin:/usr/bin
 export USER="${USER:-$(id -un)}"
 export LOGNAME="${LOGNAME:-$USER}"
 
+# gcloud/bq need Python 3.10+; the system python3 is 3.9 and the Cloud SDK
+# dies on a SyntaxError under launchd's bare PATH (measured 2026-09-08 — the
+# interactive shells hid it because the python.org 3.13 build led their PATH).
+# Pin the newest CPython this machine has; extend the list when Python moves.
+if [[ -z "${CLOUDSDK_PYTHON:-}" ]]; then
+  for _py in /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3; do
+    [[ -x "$_py" ]] && export CLOUDSDK_PYTHON="$_py" && break
+  done
+fi
+
 REPO="${FINANCE_REPO:-$HOME/conductor/repos/personal}"
 CLAUDE_BIN="${CLAUDE_BIN:-/opt/homebrew/bin/claude}"
 cd "$REPO" || { echo "nightly-sync: repo not found at $REPO" >&2; exit 1; }
