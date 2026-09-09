@@ -62,11 +62,23 @@ From `gold.transactions` (cloud: `run_finance_query`; local:
 refunds/reimbursements are excluded by flow typing — every rendered report
 must say so, per the disclosure rule):
 
-- The transaction list: `transaction_date`, `vendor_name`,
-  `flow_expense_amount`, `canonical_category` — one row each, newest first.
-- Category totals beneath, plus a count and total for uncategorized rows
-  (`canonical_category` missing or 'Uncategorized'), each uncategorized row
-  listed date + merchant + amount for review.
+- The transaction list, rendered as a TABLE — one row each, newest first:
+  `Date | Merchant | Amount | Classification`. Select `transaction_date`,
+  `vendor_name`, `flow_expense_amount`, `canonical_category`,
+  `classification_source`.
+- **The Classification column is actionable, not decorative.** For a row the
+  mirror already classifies, print the category plainly. For a row where
+  `canonical_category` is missing or 'Uncategorized', SUGGEST one from the
+  merchant and print it as `**<category>** ⚠️ *suggested*` — the suggestion is
+  the point of the column, so an uncategorized row is never rendered blank.
+  Suggest only from the live typology (the categories already in use); never
+  invent a category name. If the merchant genuinely gives no signal, print
+  `— needs a human` rather than guessing.
+- Beneath the table: category totals, and a count + total of the suggested
+  rows with the line "say 'yes' to apply these, or name the ones to change" —
+  applying them is `reclassify_transaction` / `add_vendor_mapping` in the
+  interactive protocol (`references/interactive.md`), NEVER from this
+  procedure. Generation suggests; only a session with Steven present writes.
 - **Window longer than 5 days:** collapse the list to category totals with a
   transaction count (R14 bound) — aggregates first, so a long gap cannot
   exhaust context. Compute totals SQL-side either way.
@@ -79,7 +91,18 @@ merge `context/expected-recurrings.md` on top (curated cadences history can't
 infer). Render each as: vendor — expected around day N — last seen date —
 state (overdue / upcoming). Overdue first.
 
-## 5. Work — consumption with week-over-week trends
+Render these **inside the Personal section, directly beneath the transaction
+table**, under a bold `Keep an eye on` line — not as a section of their own.
+A recurring that has not hit is the highest-value line in the whole report (it
+is what surfaced the missed September mortgage on 2026-09-09), so it sits with
+the money it concerns rather than in a footer. Business-side recurrings do NOT
+appear here; they are the subscriptions table in §6.
+
+When nothing is overdue or upcoming, print `Keep an eye on: nothing overdue` —
+one line, never a silent omission, so its absence is never mistaken for a
+clean bill.
+
+## 5. Business — consumption, by provider
 
 - Live pulls: `./scripts/spend-checkin-costs.sh --start <window_start> --end
   <window_end>` → JSON with `cost`, `prev_cost` (same window seven days
@@ -108,18 +131,32 @@ state (overdue / upcoming). Overdue first.
   Results come back one row per (day, provider) as `accrued_at` / `amount` /
   `provider`, so sum per provider across the window rather than expecting a
   total.
-- The four lines (each with a trend marker vs `prev_cost` — ↑/↓ with %, or
-  "≈ flat" under 15%; "no comparison available" when the baseline is missing
-  or zero on a first run — never invent a delta):
-  1. **BigQuery** — live scan estimate (+ GCP billed from Vantage when present)
-  2. **AI API credits** — Anthropic + OpenAI billed via Vantage
-  3. **Apify** — actor-run usage
-  4. **LangSmith** — LangSmith-tracked LLM run costs (the live estimate of
-     API usage; LangSmith's own platform bill lands under Other subscriptions)
+Render as ONE TABLE keyed by provider — `Provider | This window | Baseline |
+Δ` — not as prose lines. One row per provider, largest spend first:
+
+| Provider | Source of the figure | Baseline |
+|---|---|---|
+| GCP | Vantage billed, + the live BigQuery scan estimate as a sub-line | **30-day daily average** from Vantage |
+| Anthropic | Vantage billed | **30-day daily average** from Vantage |
+| OpenAI | Vantage billed | **30-day daily average** from Vantage |
+| Apify | collector, actor-run usage | same window last week (`prev_cost`) |
+| LangSmith | collector, tracked LLM run costs | same window last week (`prev_cost`) |
+
+**The two baselines are not the same measure, so label them.** Vantage returns
+one row per (day, provider), so a 30-day average is a second `query-costs` call
+over a 30-day range divided by the days covered — the comparison Steven asked
+for. The collector currently computes only same-window-last-week, so Apify and
+LangSmith rows say "vs last week" in the Δ column until the collector grows a
+30-day baseline. Never present a week-over-week delta as a monthly average.
+
+Δ marker: ↑/↓ with a percentage, `≈ flat` under 15%, and
+`no comparison available` when the baseline is missing or zero — never invent
+a delta. Flag ↑ above 50% in bold; that is the "above average" Steven is
+reading for.
 - Billed (Vantage) and live (scripts) are different lenses over the same
   spend — label them, never sum them (the cash/billed/estimated rule).
 
-## 6. Other subscriptions — Mercury
+## 6. Business — subscriptions (Mercury)
 
 The fetch is transport-dependent; the counting rules are shared:
 
@@ -143,12 +180,48 @@ counterparty: venture tag via the mapping (case-insensitive substring; no
 match → `unmapped`, listed for review with a one-line "say 'map X to
 <venture>'" hint), summed amount, transaction count.
 
+Render as a TABLE — `Provider | Venture | Amount | Status` — and note what
+Status means here: these are **non-variable** charges, so a trend against an
+average is meaningless. What matters is whether the charge behaved:
+
+- `hit` — posted this window at its usual amount
+- `hit, amount changed` — posted, but the amount differs from its recent
+  norm; show both figures. A silent price rise is the thing this catches.
+- `not yet` — a counterparty that bills on a known cadence has not posted
+  and is past its usual day. Derive the cadence from the counterparty's own
+  Mercury history over the trailing 90 days; do not guess from one sighting.
+- `unmapped` ⚠️ — no venture match; never guessed.
+
+A `not yet` row is the business-side equivalent of the personal watch items in
+§4, and belongs in this table rather than a separate list.
+
 ## 7. Compose `report_md`
 
 Order: stamps (when earned — see below) → window header (state each source's
-window when they diverge) → headline (personal cash · Mercury cash · cloud
-billed · cloud live — cash and usage lenses never summed) → Personal
-transactions → Keep an eye on → Work → Other subscriptions → Notes.
+window when they diverge) → **headline table** → **Personal** (transaction
+table, then Keep an eye on) → **Business** (consumption by provider, then
+subscriptions) → Notes.
+
+**The headline is a table, and it opens the report** — three rows, no more:
+
+| | |
+|---|---|
+| Personal | $X |
+| Business — consumption | $Y |
+| Business — subscriptions | $Z |
+
+Consumption and subscriptions are both business spend but different lenses —
+usage accruing versus cash that left the bank — so they are separate rows and
+are NEVER summed into a "business total". Same rule that keeps personal cash
+and cloud usage apart. A null figure renders as `—` with its DEGRADED stamp
+above, never as $0.
+
+Everything below the headline is a table too: Personal is
+`Date | Merchant | Amount | Classification`, consumption is
+`Provider | This window | Baseline | Δ`, subscriptions is
+`Provider | Venture | Amount | Status`. Prose belongs in Notes and in the
+"Keep an eye on" line, nowhere else — the report is read at 6am on a phone,
+so the scannable shape is the feature.
 
 **Stamps go at/near the top, above the headline:**
 
