@@ -162,3 +162,154 @@ class DoorService:
         from . import saved_queries
 
         return saved_queries.feed_health(max_rows=max_rows)
+
+    # -- governed finance writes -------------------------------------------
+    #
+    # Same property as the reads: `_authorize` FIRST, then delegate to the
+    # governed write runtime (finance_write.py), stamping who is writing onto
+    # every audit row.
+
+    def _write_actor(self, identity: Identity):
+        """The audit stamp for this request.
+
+        U10 SEAM: today every authorized writer is the enrolled human on an
+        OAuth session, so window_state is 'human' and the identity is the
+        verified email. U10 adds machine identities, per-identity grants, and
+        the schedule dial by extending THIS method (and `_authorize`) — the
+        write tools themselves never look at who is calling.
+        """
+        from .finance_write import WriteActor
+
+        return WriteActor(
+            identity=(identity.email or "").strip().lower(),
+            client_id=identity.client_id,
+            window_state="human",
+        )
+
+    def record_checkin(self, identity: Identity, payload: dict) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.record_checkin(payload, actor=self._write_actor(identity))
+
+    def record_checkin_failed(self, identity: Identity, reason: str) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.record_checkin_failed(
+            reason, actor=self._write_actor(identity)
+        )
+
+    def reclassify_transaction(
+        self, identity: Identity, transaction_key: str, category: str, notes: str = ""
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.reclassify_transaction(
+            transaction_key, category, notes, actor=self._write_actor(identity)
+        )
+
+    def set_vendor_override(
+        self, identity: Identity, transaction_key: str, vendor_name: str, notes: str = ""
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.set_vendor_override(
+            transaction_key, vendor_name, notes, actor=self._write_actor(identity)
+        )
+
+    def set_flow_override(
+        self, identity: Identity, transaction_key: str, flow_type: str, notes: str = ""
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.set_flow_override(
+            transaction_key, flow_type, notes, actor=self._write_actor(identity)
+        )
+
+    def add_vendor_mapping(
+        self, identity: Identity, vendor_name: str, category_id: str, notes: str = ""
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.add_vendor_mapping(
+            vendor_name, category_id, notes, actor=self._write_actor(identity)
+        )
+
+    def add_vendor_alias(
+        self,
+        identity: Identity,
+        alias_name: str,
+        canonical_vendor_name: str,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.add_vendor_alias(
+            alias_name, canonical_vendor_name, notes, actor=self._write_actor(identity)
+        )
+
+    def add_classification_rule(
+        self,
+        identity: Identity,
+        rule_id: str,
+        priority: int,
+        description_regex: str,
+        category: str,
+        subcategory: str = "",
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.add_classification_rule(
+            rule_id,
+            priority,
+            description_regex,
+            category,
+            subcategory,
+            actor=self._write_actor(identity),
+        )
+
+    def add_vendor_rule(
+        self,
+        identity: Identity,
+        rule_id: str,
+        priority: int,
+        description_regex: str,
+        vendor_name: str,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity)
+        if refusal:
+            return refusal
+        from . import finance_write
+
+        return finance_write.add_vendor_rule(
+            rule_id,
+            priority,
+            description_regex,
+            vendor_name,
+            notes,
+            actor=self._write_actor(identity),
+        )

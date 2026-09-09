@@ -8,9 +8,10 @@ generic safety regex, with the source whitelist replaced wholesale.
 Deliberately absent from the whitelist:
   tiller_raw.*   external tables over the Tiller Google Sheet. Reading them
                  needs Drive credentials the door does not and must not hold.
-  the write surface (classification_rules, transaction_overrides, vendor_rules,
-                 vendor_aliases, transaction_*_overrides) — the door is
-                 read-only, so surfacing them would only invite a write attempt.
+
+Writes are NOT here. Every governed write lives in door/finance_write.py behind
+its own validation, transaction, and audit path; this module stays read-only by
+construction, so nothing routed through `run_finance_query` can ever mutate.
 """
 
 from __future__ import annotations
@@ -163,6 +164,10 @@ SOURCES: dict[str, dict[str, str]] = {
         "grain": "daily check-in run",
         "summary": "One row per daily spend check-in run: window, per-source status/totals JSON, and the rendered report_md. For the morning report, prefer the latest-spend-checkin saved query — it serves the newest status='success' row.",
     },
+    f"{FINANCE}.door_audit_log": {
+        "grain": "door write attempt",
+        "summary": "Append-only audit of every write attempted through the door — accepted, no-op, or refused — with enumerated results and row keys, never row contents. Written only by the door's write tools; read it to answer what changed, when, and by whom.",
+    },
     f"{FINANCE}.assumptions": {
         "grain": "assumption",
         "summary": "Projection assumptions (rates, growth, planned changes). State which assumptions a projection used.",
@@ -171,13 +176,15 @@ SOURCES: dict[str, dict[str, str]] = {
         "grain": "assumption",
         "summary": "The currently-effective assumption set.",
     },
-    # ---- classification lookups (READ-only; they explain why a label exists) ----
+    # ---- classification lookups (READ here; they explain why a label exists) ----
     # These are the tables the add-*.sh scripts write. Reading them is what lets
     # an answer explain "why is this vendor called that" instead of guessing,
     # and several vetted queries in queries/ depend on them. They hold mappings
-    # and notes, not amounts. The door has no write tools at all, so there is no
-    # write path here to invite — unlike tiller_raw, whose exclusion is a real
-    # technical boundary (Drive credentials), not a precaution.
+    # and notes, not amounts. Writing them goes ONLY through the governed tools
+    # in door/finance_write.py (validated, transactional, audited) — never
+    # through this query surface, whose validator rejects all DML — unlike
+    # tiller_raw, whose exclusion is a real technical boundary (Drive
+    # credentials), not a precaution.
     f"{GOLD}.vendor_aliases": {
         "grain": "vendor alias",
         "summary": "Exact description->vendor alias lookup. First step of vendor identity resolution.",
