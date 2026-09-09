@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "personal-door": {
+      "type": "http",
+      "url": "https://personal-door-513222566024.us-central1.run.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PERSONAL_DOOR_TOKEN}"
+      }
+    },
+    "vantage": {
+      "type": "http",
+      "url": "https://mcp.vantage.sh/mcp",
+      "headers": {
+        "Authorization": "Bearer ${VANTAGE_API_TOKEN}"
+      }
+    }
+  }
+}

@@ -29,10 +29,13 @@
     <key>LOGNAME</key><string>stevenjacobs</string>
   </dict>
 
+  <!-- Burn-in offset: the cloud routine owns ~6:00; this laptop generator is
+       the 6:30 fallback until cutover (docs/runbooks/cloud-checkin.md). The
+       today-guard makes it a no-op whenever the cloud run already landed. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>6</integer>
-    <key>Minute</key><integer>0</integer>
+    <key>Minute</key><integer>30</integer>
   </dict>
 
   <!-- A Mac asleep at 6:00 runs the missed job on wake. A Mac powered OFF at
