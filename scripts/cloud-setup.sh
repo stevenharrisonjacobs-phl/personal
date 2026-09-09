@@ -16,7 +16,13 @@
 # Changing this text invalidates the environment's cached snapshot, which is
 # what forces a re-run.
 
-pip install --quiet --disable-pip-version-check \
+# --ignore-installed packaging is load-bearing, not defensive. langsmith wants
+# a newer `packaging` than Ubuntu ships; pip tries to uninstall the Debian one,
+# cannot ("RECORD file not found. Hint: The package was installed by debian"),
+# and ABORTS THE WHOLE INSTALL before landing a single package. Verified in the
+# environment 2026-09-09: without this flag, exit 1 and nothing installed; with
+# it, exit 0 and 43 packages installed.
+pip install --quiet --disable-pip-version-check --ignore-installed packaging \
   'google-cloud-bigquery>=3.25,<4' \
   'langsmith>=0.1,<1' || true
 
