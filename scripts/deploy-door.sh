@@ -7,6 +7,10 @@
 #
 # Order:  plan → bootstrap (once) → secrets → build → candidate → probe → promote
 #
+# Every stage that creates state is CREATE-IF-ABSENT. Rotation is never a
+# side effect of re-running setup: it has its own stages, because the OAuth
+# secrets and the machine tokens have completely different blast radii.
+#
 # The candidate-then-probe dance is not ceremony. A broken image must never take
 # requests, and the tell is specific: on a healthy revision /mcp returns 401
 # (auth required). A 404 means the wrong image shipped.
@@ -45,13 +49,19 @@ personal-door deploy plan
 Stages (run one at a time, read the output of each):
 
   bootstrap   one-time: Artifact Registry repo, runtime SA, BigQuery + Firestore IAM
-  secrets     create the OAuth/JWT/Fernet secrets AND mint the 3 machine tokens
-              (checkin-routine / checkin-watchdog / checkin-smoke). The door
-              gets sha256 DIGESTS only; the raw tokens land in per-caller
-              secrets. Re-running ROTATES the machine tokens.
+  secrets     CREATE-IF-ABSENT: the OAuth/JWT/Fernet secrets and the 3 machine
+              tokens (checkin-routine / checkin-watchdog / checkin-smoke). The
+              door gets sha256 DIGESTS only; the raw tokens land in per-caller
+              secrets. Re-running this stage changes NOTHING that already
+              exists — see the rotate-* stages.
+  rotate-tokens        mint new machine tokens (and a new digests version).
+              Requires the redeploy sequence printed at the end; until then the
+              live revision still holds the OLD digests.
+  rotate-oauth-secret  add a new version of the Google OAuth client secret.
   build       cloud build of door/Dockerfile -> \$IMAGE
   candidate   deploy \$IMAGE with NO traffic, tagged 'candidate'. Carries the
-              PERSONAL_DOOR_GRANTS dial (identity -> tools + ET window).
+              PERSONAL_DOOR_GRANTS dial (identity -> tools + ET window) and
+              PINS every secret to the version current at deploy time.
   probe       POST /mcp on the candidate. Expect 401 with no auth AND a
               refusal for a bogus bearer. A 404 = wrong image. Then verifies
               the grants dial with the REAL machine tokens (read back from
@@ -62,6 +72,13 @@ Stages (run one at a time, read the output of each):
 After promote: a redeploy expires live MCP sessions, and a connector's tool list
 is snapshotted when it is added. If the toolset changed, REMOVE and RE-ADD the
 connector in claude.ai — a reconnect is not enough.
+
+Secret versions are PINNED per revision, never ':latest'. Cloud Run resolves
+secret env vars when an INSTANCE starts, not once per deploy, so ':latest' lets
+a warm instance and a cold one disagree about which digests are valid — a
+rotation would then produce intermittent, unattributable 401s. Pinning makes a
+revision's configuration immutable: adding a secret version changes nothing
+until you deploy a new candidate and promote it.
 EOF
   ;;
 
@@ -131,13 +148,24 @@ bootstrap)
   echo "Bootstrap done. Next: $0 secrets"
   ;;
 
-secrets)
+secrets|rotate-tokens|rotate-oauth-secret)
   # Done as a stage rather than as copy-paste commands: a trailing newline on
   # the OAuth secret, or a Fernet key mangled by shell quoting, both fail late
   # and confusingly (at the Google token exchange, not at deploy).
-  put() { # put NAME < value-on-stdin
+  #
+  # CREATE-IF-ABSENT is the whole point of the split. `secrets` used to add a
+  # new version of everything on every run, which made "rotate the machine
+  # tokens" also mean "throw away the JWT signing key and the Fernet key" —
+  # invalidating every issued JWT and rendering every Firestore record
+  # encrypted under the old Fernet key permanently unreadable. Those two keys
+  # now have no rotation stage at all, deliberately: rotating
+  # STORAGE_ENCRYPTION_KEY without a re-encrypt migration is data loss, not
+  # rotation.
+  have() { gc secrets describe "$1" --project "$PROJECT" >/dev/null 2>&1; }
+
+  add_version() { # add_version NAME < value-on-stdin  — always a new version
     local name="$1"
-    if gc secrets describe "$name" --project "$PROJECT" >/dev/null 2>&1; then
+    if have "$name"; then
       gc secrets versions add "$name" --data-file=- --project "$PROJECT" >/dev/null
       echo "  $name — new version added"
     else
@@ -146,20 +174,16 @@ secrets)
     fi
   }
 
-  printf 'Paste the OAuth client secret (input hidden), then Enter: '
-  IFS= read -rs CLIENT_SECRET
-  echo
-  [ -n "$CLIENT_SECRET" ] || { echo "Empty. Nothing done." >&2; exit 1; }
-  # printf %s, never echo: a trailing newline in the stored secret makes Google
-  # reject the token exchange with an error that does not mention whitespace.
-  printf %s "$CLIENT_SECRET" | put GOOGLE_OAUTH_CLIENT_SECRET
-  unset CLIENT_SECRET
-
-  openssl rand -base64 48 | tr -d '\n' | put JWT_SIGNING_KEY
-
-  # A Fernet key is 32 random bytes in URL-SAFE base64. Plain `openssl -base64`
-  # emits +/ which Fernet rejects, hence the tr.
-  openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n' | put STORAGE_ENCRYPTION_KEY
+  put_if_absent() { # put_if_absent NAME < value-on-stdin
+    local name="$1"
+    if have "$name"; then
+      cat >/dev/null            # drain the pipe; the new value is discarded
+      echo "  $name — exists, left alone"
+    else
+      gc secrets create "$name" --data-file=- --project "$PROJECT" >/dev/null
+      echo "  $name — created"
+    fi
+  }
 
   # --- machine identities (write side, U10) ---
   # One bearer token per non-interactive caller. The DOOR never sees these:
@@ -167,24 +191,88 @@ secrets)
   # cannot be replayed as a caller. The raw token secrets exist for the
   # callers (the cloud check-in routine, its watchdog, the deploy smoke),
   # which read PERSONAL_DOOR_MACHINE_TOKEN_<NAME>:latest at run time.
-  #
-  # Re-running this stage ROTATES all three tokens. Callers reading :latest
-  # heal on their next run; anything pinned to an old version starts getting
-  # 401s from the door — rotate deliberately, then watch the next check-in.
   DIGEST=""
-  mint() { # mint SECRET_SUFFIX -> token secret stored; digest left in $DIGEST
-    local name="$1" token
+  mint() { # mint SECRET_SUFFIX WRITER -> token stored; digest left in $DIGEST
+    local name="$1" writer="$2" token
     token="$(openssl rand -hex 32)"   # 32 random bytes, hex — never echoed
-    printf %s "$token" | put "PERSONAL_DOOR_MACHINE_TOKEN_${name}"
+    printf %s "$token" | "$writer" "PERSONAL_DOOR_MACHINE_TOKEN_${name}"
     DIGEST="$(printf %s "$token" | openssl dgst -sha256 | awk '{print $NF}')"
     unset -v token
   }
-  mint CHECKIN_ROUTINE;  digest_routine="$DIGEST"
-  mint CHECKIN_WATCHDOG; digest_watchdog="$DIGEST"
-  mint CHECKIN_SMOKE;    digest_smoke="$DIGEST"
-  printf '{"checkin-routine":"%s","checkin-watchdog":"%s","checkin-smoke":"%s"}' \
-      "$digest_routine" "$digest_watchdog" "$digest_smoke" \
-    | put PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS
+  mint_all() { # mint_all WRITER — the three identities plus the digests map
+    local writer="$1" digest_routine digest_watchdog digest_smoke
+    mint CHECKIN_ROUTINE  "$writer"; digest_routine="$DIGEST"
+    mint CHECKIN_WATCHDOG "$writer"; digest_watchdog="$DIGEST"
+    mint CHECKIN_SMOKE    "$writer"; digest_smoke="$DIGEST"
+    printf '{"checkin-routine":"%s","checkin-watchdog":"%s","checkin-smoke":"%s"}' \
+        "$digest_routine" "$digest_watchdog" "$digest_smoke" \
+      | "$writer" PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS
+  }
+
+  case "$stage" in
+
+  rotate-oauth-secret)
+    printf 'Paste the NEW OAuth client secret (input hidden), then Enter: '
+    IFS= read -rs CLIENT_SECRET
+    echo
+    [ -n "$CLIENT_SECRET" ] || { echo "Empty. Nothing done." >&2; exit 1; }
+    printf %s "$CLIENT_SECRET" | add_version GOOGLE_OAUTH_CLIENT_SECRET
+    unset CLIENT_SECRET
+    echo
+    echo "A new version exists, but revisions PIN secret versions — the live"
+    echo "door still uses the old one. To cut over: $0 build && $0 candidate"
+    echo "&& $0 probe && $0 promote"
+    exit 0
+    ;;
+
+  rotate-tokens)
+    have PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS \
+      || { echo "No machine tokens exist yet. Run: $0 secrets" >&2; exit 1; }
+    echo "Rotating all three machine tokens in $PROJECT."
+    echo
+    echo "The new tokens are live in Secret Manager IMMEDIATELY, but the door"
+    echo "will not accept them until a revision pinned to the new digests is"
+    echo "promoted. Any caller reading :latest in between gets a 401. Do this"
+    echo "when a missed check-in is acceptable, and run the redeploy now."
+    read -r -p "Type the project id to continue: " confirm
+    [ "$confirm" = "$PROJECT" ] || { echo "Mismatch. Nothing done." >&2; exit 1; }
+    mint_all add_version
+    echo
+    echo "Rotated. The cutover is NOT complete until you run, in order:"
+    echo "  $0 build && $0 candidate && $0 probe && $0 promote"
+    echo "The candidate stage pins the new digest version; probe verifies the"
+    echo "new tokens against it BEFORE any traffic moves."
+    exit 0
+    ;;
+
+  esac
+
+  # --- stage: secrets (create-if-absent) ---
+  if have GOOGLE_OAUTH_CLIENT_SECRET; then
+    echo "  GOOGLE_OAUTH_CLIENT_SECRET — exists, left alone"
+  else
+    printf 'Paste the OAuth client secret (input hidden), then Enter: '
+    IFS= read -rs CLIENT_SECRET
+    echo
+    [ -n "$CLIENT_SECRET" ] || { echo "Empty. Nothing done." >&2; exit 1; }
+    # printf %s, never echo: a trailing newline in the stored secret makes
+    # Google reject the token exchange with an error that never mentions
+    # whitespace.
+    printf %s "$CLIENT_SECRET" | put_if_absent GOOGLE_OAUTH_CLIENT_SECRET
+    unset CLIENT_SECRET
+  fi
+
+  openssl rand -base64 48 | tr -d '\n' | put_if_absent JWT_SIGNING_KEY
+
+  # A Fernet key is 32 random bytes in URL-SAFE base64. Plain `openssl -base64`
+  # emits +/ which Fernet rejects, hence the tr.
+  openssl rand 32 | base64 | tr '+/' '-_' | tr -d '\n' | put_if_absent STORAGE_ENCRYPTION_KEY
+
+  if have PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS; then
+    echo "  machine tokens — exist, left alone (rotate with: $0 rotate-tokens)"
+  else
+    mint_all put_if_absent
+  fi
 
   # The runtime SA may read the digests but NOT the raw tokens — the door
   # verifies, it never impersonates. Grant each CALLER's service account
@@ -199,7 +287,7 @@ secrets)
       --project "$PROJECT" >/dev/null
   done
   echo "Runtime SA granted: OAuth/JWT/Fernet secrets + the token DIGESTS."
-  echo "Machine tokens minted (raw values only in Secret Manager, never printed)."
+  echo "Anything already present was left untouched — re-running is safe."
   echo "Next: $0 build"
   ;;
 
@@ -262,6 +350,41 @@ candidate)
   default_grants='{"checkin-routine":{"write_tools":["record_checkin","record_checkin_failed","reclassify_transaction","set_vendor_override","set_flow_override","add_vendor_mapping","add_vendor_alias","add_classification_rule","add_vendor_rule"],"read_tools":["run_finance_query","saved_query","list_saved_queries","feed_health"],"window":"06:45-23:00"},"checkin-watchdog":{"write_tools":["record_checkin_failed"],"read_tools":["saved_query","list_saved_queries"],"window":"always"},"checkin-smoke":{"write_tools":[],"read_tools":["saved_query","list_saved_queries","feed_health"],"window":"always"}}'
   GRANTS="${PERSONAL_DOOR_GRANTS:-$default_grants}"
 
+  # Pin every secret to the version that is current RIGHT NOW, never :latest.
+  # Cloud Run resolves secret env vars when an INSTANCE starts, not once per
+  # deploy: with :latest, adding a secret version leaves warm instances on the
+  # old value while newly started ones get the new one. For the token digests
+  # that is split-brain authentication — the same caller token is accepted or
+  # 401'd depending on which instance answers, intermittently and with nothing
+  # in the logs naming rotation as the cause. Pinning makes a revision's
+  # configuration immutable, so rotation is a deploy, which is observable.
+  # Appends to $secret_args rather than printing, so a failure to resolve any
+  # ONE version aborts here. Composing with $(pin a),$(pin b) would not: the
+  # exit status of that assignment is only the LAST substitution's, so a
+  # silently empty first element would ship a malformed --set-secrets.
+  secret_args=""
+  pin() { # pin NAME -> appends NAME=NAME:<n> to $secret_args
+    local name="$1" version
+    # `|| true` because set -e would otherwise kill the stage before the case
+    # below can say WHICH secret is missing and what to run about it.
+    version=$(gc secrets versions describe latest --secret "$name" \
+                --project "$PROJECT" --format='value(name)' 2>/dev/null \
+              | sed 's#.*/##' || true)
+    case "$version" in
+      ''|*[!0-9]*)
+        echo "Could not resolve a version for secret $name." >&2
+        echo "Run: $0 secrets" >&2
+        exit 1 ;;
+    esac
+    echo "  $name -> version $version"
+    secret_args="${secret_args:+$secret_args,}${name}=${name}:${version}"
+  }
+  echo "Pinning secret versions for this revision:"
+  pin GOOGLE_OAUTH_CLIENT_SECRET
+  pin JWT_SIGNING_KEY
+  pin STORAGE_ENCRYPTION_KEY
+  pin PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS
+
   # --no-invoker-iam-check keeps the URL publicly reachable (claude.ai must
   # reach it) while the door's own OAuth + allowlist remain the perimeter.
   #
@@ -275,8 +398,8 @@ candidate)
     --no-invoker-iam-check \
     "${traffic_args[@]}" \
     --set-env-vars "^##^GCP_PROJECT_ID=${PROJECT}##FINANCE_DATASET=finance##GOLD_DATASET=gold##FIRESTORE_PROJECT=${PROJECT}##PERSONAL_DOOR_ALLOWED_EMAILS=${PERSONAL_DOOR_ALLOWED_EMAILS}##BASE_URL=${BASE_URL}##GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}##PERSONAL_DOOR_GRANTS=${GRANTS}" \
-    --set-secrets "GOOGLE_OAUTH_CLIENT_SECRET=GOOGLE_OAUTH_CLIENT_SECRET:latest,JWT_SIGNING_KEY=JWT_SIGNING_KEY:latest,STORAGE_ENCRYPTION_KEY=STORAGE_ENCRYPTION_KEY:latest,PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS=PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS:latest"
-  echo "Deployed. Next: $0 probe"
+    --set-secrets "$secret_args"
+  echo "Deployed with pinned secret versions. Next: $0 probe"
   ;;
 
 probe)
@@ -337,9 +460,12 @@ probe)
   #   d. checkin-watchdog calling run_finance_query     -> forbidden
   #      (a governed read, deliberately NOT in its grant)
   #
-  # If assertion (a) fails, first suspect token rotation AFTER the candidate
-  # deployed: the candidate resolved the digests secret at deploy time, so a
-  # later `secrets` re-run strands it. Re-run: candidate, then probe.
+  # If assertion (a) fails, first suspect `rotate-tokens` run AFTER this
+  # candidate deployed: the candidate PINS the digests version it saw, while
+  # read_token below reads :latest, so the probe would be presenting new
+  # tokens to a revision that only knows the old digests. That is the pin
+  # working as intended — it fails here, loudly, instead of intermittently in
+  # production. Re-run: candidate, then probe.
   echo
   echo "Verifying the grants dial against the candidate (real machine tokens)..."
 
@@ -470,7 +596,10 @@ EOF
   ;;
 
 *)
-  echo "Unknown stage: $stage (plan|bootstrap|build|candidate|probe|promote)" >&2
+  echo "Unknown stage: $stage" >&2
+  echo "  setup:  plan | bootstrap | secrets" >&2
+  echo "  deploy: build | candidate | probe | promote" >&2
+  echo "  rotate: rotate-tokens | rotate-oauth-secret" >&2
   exit 2
   ;;
 esac

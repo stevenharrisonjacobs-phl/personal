@@ -83,8 +83,30 @@ rm /tmp/checkin-costs-read.json                    # delete the key file
 
 ### 3. Door machine tokens
 
-Minted during the door deploy (`scripts/deploy-door.sh` secrets stage) — three
-tokens, three digests in door env, grants JSON per `door/.env.example`.
+Minted during the door deploy (`scripts/deploy-door.sh secrets`) — three
+tokens, three digests in door env, grants JSON per `door/.env.example`. That
+stage is create-if-absent, so re-running it during provisioning is safe.
+
+**Rotating them later** is a separate stage and a full redeploy, in this order:
+
+```bash
+./scripts/deploy-door.sh rotate-tokens          # mints; prints the cutover
+./scripts/deploy-door.sh build
+./scripts/deploy-door.sh candidate              # pins the NEW digest version
+./scripts/deploy-door.sh probe                  # proves the new tokens work
+./scripts/deploy-door.sh promote
+```
+
+Callers read `PERSONAL_DOOR_MACHINE_TOKEN_<NAME>:latest` at run time, so they
+pick up the new token the moment it is minted, while the live revision still
+pins the old digests: **every machine call 401s between `rotate-tokens` and
+`promote`.** Rotate when a missed check-in is acceptable, and finish the
+sequence in one sitting. If a check-in falls in that window, the watchdog's own
+call 401s too — expect no row and no failed row for that morning.
+
+Never rotate `JWT_SIGNING_KEY` or `STORAGE_ENCRYPTION_KEY`: there is no stage
+for it because regenerating the Fernet key makes existing Firestore OAuth
+records unreadable. That needs a re-encrypt migration, not a rotation.
 
 ### 4. Cloud environment (claude.ai/code → Environments)
 

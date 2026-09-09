@@ -31,8 +31,10 @@ Write discipline, in order of importance:
     TO_HEX(SHA256) values and legitimately contain long digit runs.
 
 Layering mirrors finance_native.py: everything above `_execute` is pure
-(construction + validation, provable offline in tests/test_door_write.py);
-`_execute` is the single BigQuery touchpoint.
+(construction + validation, provable offline in tests/test_door_write.py).
+`_execute` is the write touchpoint; `_job_outcome` is the only other one —
+it exists because a write whose result timed out must be reconciled through
+the JOB API, not through the query path whose outcome is in doubt.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,7 +74,28 @@ TXN_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 # Same account-number heuristic as checkin_validate; applied to every
 # structured field EXCEPT transaction keys.
 DIGIT_RUN = checkin_validate.DIGIT_RUN
-FLOW_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+# The flow_type vocabulary gold ACTUALLY understands: every value the
+# classifier CASE in sql/gold.sql can emit, plus capital_proceeds, which only
+# an override produces but the flow_* metric columns still score. A shape
+# check is not enough here — gold.transactions COALESCEs the override
+# straight into flow_type, and a value outside this set matches no metric
+# CASE, so the transaction silently contributes to spending, income, refunds,
+# transfers and investment activity alike: zero. A typo ('expnese') is the
+# failure mode, and it is invisible. tests/test_door_write.py pins this set
+# against sql/gold.sql so the two cannot drift apart.
+FLOW_TYPES = frozenset({
+    "adjustment",
+    "cash_withdrawal",
+    "capital_proceeds",
+    "credit_card_payment",
+    "earned_income",
+    "expense",
+    "internal_transfer",
+    "investment_activity",
+    "investment_income",
+    "needs_review",
+    "refund_reimbursement",
+})
 RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 REASON_CAP = 300
@@ -427,11 +451,37 @@ _REGEX_GUARD = "SELECT IF(NOT REGEXP_CONTAINS('', @description_regex), TRUE, TRU
 
 # ── execution: the only BigQuery touchpoint ──────────────────────────────────
 
-# A stuck backend must surface as the existing job-failed refusal path rather
-# than hang the tool while a half-open transaction holds locks: bound both the
-# submission RPC and the wait for the job's result.
+# A stuck backend must surface as a bounded, honest outcome rather than hang
+# the tool while a half-open transaction holds locks: bound both the submission
+# RPC and the wait for the job's result. Timing out is NOT failing (see
+# JobIndeterminate), so these bounds cost accuracy, never correctness.
 JOB_SUBMIT_TIMEOUT = 60  # seconds for client.query() to submit the job
 JOB_RESULT_TIMEOUT = 240  # seconds for job.result() to finish
+JOB_LOOKUP_TIMEOUT = 30  # seconds for the reconciling jobs.get / result read
+
+
+class JobIndeterminate(Exception):
+    """We stopped waiting on a write job whose outcome is genuinely unknown.
+
+    `job.result(timeout=...)` expiring means only that the CLIENT gave up; the
+    transaction may commit a moment later. Reporting that as a rolled-back
+    write is the dangerous lie — it invites a retry that appends a second
+    override row or lands a duplicate check-in. Carries the job id so the
+    outcome can be reconciled against BigQuery's own record of the job.
+    """
+
+    def __init__(self, message: str, *, job_id: str | None = None):
+        super().__init__(message)
+        self.job_id = job_id
+
+
+def _job_id(tool: str) -> str:
+    """A client-side job id, so a job that outruns our wait stays nameable.
+
+    Without one, BigQuery assigns the id server-side and a submit RPC that
+    times out leaves an unnameable — and therefore unreconcilable — job.
+    """
+    return f"door-{re.sub(r'[^a-z0-9_-]', '-', tool.lower())[:40]}-{uuid.uuid4().hex}"
 
 
 def _execute(sql: str, params: list[tuple], tool: str) -> list[dict]:
@@ -440,28 +490,83 @@ def _execute(sql: str, params: list[tuple], tool: str) -> list[dict]:
     Tests replace this wholesale; nothing above it touches GCP. Multi-statement
     jobs surface the FINAL statement's result set, which is why every write
     script ends with `SELECT ... AS write_result`.
+
+    Raises JobIndeterminate — never a plain error — when a timeout leaves the
+    job's fate unknown. Every other failure is a real failure.
     """
+    from concurrent.futures import TimeoutError as _WaitTimeout
+
     from google.cloud import bigquery
 
     client = finance_native._bq()
-    job = client.query(
-        sql,
-        job_config=bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter(name, type_, value)
-                for name, type_, value in params
-            ],
-            maximum_bytes_billed=finance_native.MAX_BYTES_BILLED,
-            labels={"tool": re.sub(r"[^a-z0-9_-]", "-", tool.lower())[:60]},
-        ),
-        timeout=JOB_SUBMIT_TIMEOUT,
-    )
+    job_id = _job_id(tool)
+    try:
+        job = client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter(name, type_, value)
+                    for name, type_, value in params
+                ],
+                maximum_bytes_billed=finance_native.MAX_BYTES_BILLED,
+                labels={"tool": re.sub(r"[^a-z0-9_-]", "-", tool.lower())[:60]},
+            ),
+            job_id=job_id,
+            timeout=JOB_SUBMIT_TIMEOUT,
+        )
+    except _WaitTimeout as exc:
+        # The submit RPC may still have created the job server-side.
+        raise JobIndeterminate(
+            f"submit did not answer inside {JOB_SUBMIT_TIMEOUT}s", job_id=job_id
+        ) from exc
+    try:
+        rows = list(job.result(timeout=JOB_RESULT_TIMEOUT))
+    except _WaitTimeout as exc:
+        # Best effort: stop the job so it cannot sit on locks. A cancel that
+        # arrives after COMMIT is a no-op, which is exactly why cancelling is
+        # not the same as knowing the outcome.
+        try:
+            job.cancel()
+        except Exception:
+            pass
+        raise JobIndeterminate(
+            f"job did not finish inside {JOB_RESULT_TIMEOUT}s",
+            job_id=job.job_id or job_id,
+        ) from exc
     return [
         finance_native._redact_row(
             {key: finance_native._json_value(value) for key, value in dict(row).items()}
         )
-        for row in job.result(timeout=JOB_RESULT_TIMEOUT)
+        for row in rows
     ]
+
+
+def _job_outcome(job_id: str) -> dict:
+    """Ask BigQuery what actually became of a job we stopped waiting on.
+
+    The second (and last) BigQuery touchpoint; tests replace it alongside
+    `_execute`. It deliberately goes through the JOB API rather than re-running
+    or re-reading anything: the question is whether OUR transaction committed,
+    and only the job's own record answers that without ambiguity.
+
+    -> {"state": "committed"|"failed"|"running"|"unknown",
+        "write_result": str|None, "error": str|None}
+    """
+    try:
+        client = finance_native._bq()
+        job = client.get_job(job_id, timeout=JOB_LOOKUP_TIMEOUT)
+        if job.state != "DONE":
+            return {"state": "running", "write_result": None, "error": None}
+        if job.error_result:
+            return {"state": "failed", "write_result": None,
+                    "error": str(job.error_result.get("message", ""))[:400]}
+        # DONE and clean: the transaction committed. The final statement's
+        # SELECT names ok vs no-op, and it is already materialized.
+        rows = list(job.result(timeout=JOB_LOOKUP_TIMEOUT))
+        write_result = (dict(rows[0]).get("write_result") if rows else None) or "ok"
+        return {"state": "committed", "write_result": str(write_result), "error": None}
+    except Exception:
+        return {"state": "unknown", "write_result": None, "error": None}
 
 
 # ── shared plumbing ──────────────────────────────────────────────────────────
@@ -529,14 +634,85 @@ def _run_write(
     )
     try:
         rows = _execute(sql, params, tool)
+    except JobIndeterminate as exc:
+        return _reconcile(tool, actor, args, row_key, exc)
     except Exception as exc:
         # The transaction rolled back — data AND audit — so record the failed
         # attempt standalone, then report it.
-        out = _refuse(tool, actor, args, "job-failed", error=_scrub_text(str(exc)[:400]))
+        out = _refuse(tool, actor, args, "job-failed",
+                      error=_scrub_text(str(exc)[:400]), row_key=row_key)
         out["status"] = "error"
         return out
     write_result = (rows[0].get("write_result") if rows else None) or "ok"
     return {"status": write_result}
+
+
+def _reconcile(
+    tool: str, actor: WriteActor, args: dict, row_key: str, exc: JobIndeterminate
+) -> dict:
+    """Resolve a write whose wait timed out, by asking what the job did.
+
+    Three honest answers, and 'error' is only ever one of them:
+      * the job failed      -> the transaction rolled back; the existing
+                               job-failed path, unchanged
+      * the job committed    -> the write landed AFTER we stopped waiting. Its
+                               audit row committed in the same transaction, so
+                               no standalone audit row is added here.
+      * still running / unknowable -> status 'indeterminate'. NOT an error: a
+                               retry could duplicate an append-only override
+                               or a check-in, so the caller is told to
+                               reconcile rather than re-fire.
+    """
+    detail = _scrub_text(str(exc)[:300])
+    outcome = _job_outcome(exc.job_id) if exc.job_id else {"state": "unknown"}
+    state = outcome.get("state")
+
+    if state == "failed":
+        out = _refuse(
+            tool, actor, args, "job-failed",
+            error=_scrub_text(f"{detail}; the job then failed: {outcome.get('error') or ''}"[:400]),
+            row_key=row_key,
+        )
+        out["status"] = "error"
+        out["job_id"] = exc.job_id
+        return out
+
+    if state == "committed":
+        return {
+            "status": outcome.get("write_result") or "ok",
+            "warning": "completed_after_timeout",
+            "job_id": exc.job_id,
+            "note": (
+                f"the wait timed out ({detail}) but job {exc.job_id} committed; "
+                "the row and its audit row are durable — do not retry"
+            ),
+        }
+
+    # Neither committed nor failed as far as we can tell. Record the attempt
+    # standalone — the transactional audit row lands only if the job commits,
+    # so without this the trail would show nothing at all.
+    audit = "logged"
+    try:
+        sql, params = build_audit_only(
+            tool, actor, audit_args_json(args),
+            f"indeterminate key={row_key} job={exc.job_id or 'unknown'}",
+        )
+        _execute(sql, params, tool)
+    except Exception as audit_exc:
+        audit = f"audit-write-failed: {_scrub_text(str(audit_exc)[:200])}"
+    return {
+        "status": "indeterminate",
+        "reason": "job-outcome-unknown",
+        "job_id": exc.job_id,
+        "audit": audit,
+        "error": detail,
+        "note": (
+            "the write may or may not have landed: the wait expired and the "
+            f"job's outcome could not be established ({state}). Do NOT retry "
+            "blindly — read the target row back (or check the job in BigQuery) "
+            "and re-issue only if nothing landed."
+        ),
+    }
 
 
 def _read(sql: str, params: list[tuple], tool: str) -> list[dict] | None:
@@ -724,23 +900,18 @@ def record_checkin_failed(reason: str, *, actor: WriteActor) -> dict:
 # ── tools: classification family ─────────────────────────────────────────────
 
 
-def reclassify_transaction(
-    transaction_key: str, category: str, notes: str = "", *, actor: WriteActor
-) -> dict:
-    tool = "reclassify_transaction"
-    args = {"transaction_key": transaction_key, "category": category}
+def _unknown_transaction(
+    tool: str, actor: WriteActor, args: dict, transaction_key: str
+) -> dict | None:
+    """Validate-first, mirroring add-vendor-category.sh: None when the key
+    names a real transaction, otherwise the response to return.
 
-    err = validate_transaction_key(transaction_key)
-    if err:
-        return _refuse(tool, actor, args, "invalid-transaction-key", error=err)
-    err = field_error("category", category) or field_error("notes", notes, required=False)
-    if err:
-        return _refuse(tool, actor, args, "invalid-field", error=err,
-                       row_key=f"transaction_key={transaction_key}")
-
-    # Validate-first, mirroring add-vendor-category.sh: the bash twin
-    # (add-override.sh) lacks this check, and an override for a key that
-    # matches nothing silently classifies nothing.
+    Every override family needs this, not just reclassify. The bash twins
+    (add-override.sh, add-flow-override.sh) lack the check, and an override on
+    a key that matches nothing is an orphan row: it lands, it reports success,
+    it proves nothing, and it classifies nothing — forever, since the override
+    tables are append-only and the join simply never matches.
+    """
     exists = _read(
         f"SELECT transaction_key FROM `{PROJECT}.{FINANCE}.v_transactions_classified`\n"
         "WHERE transaction_key = @transaction_key LIMIT 1",
@@ -755,6 +926,26 @@ def reclassify_transaction(
             error="no transaction with that key exists in the mirror",
             row_key=f"transaction_key={transaction_key}",
         )
+    return None
+
+
+def reclassify_transaction(
+    transaction_key: str, category: str, notes: str = "", *, actor: WriteActor
+) -> dict:
+    tool = "reclassify_transaction"
+    args = {"transaction_key": transaction_key, "category": category}
+
+    err = validate_transaction_key(transaction_key)
+    if err:
+        return _refuse(tool, actor, args, "invalid-transaction-key", error=err)
+    err = field_error("category", category) or field_error("notes", notes, required=False)
+    if err:
+        return _refuse(tool, actor, args, "invalid-field", error=err,
+                       row_key=f"transaction_key={transaction_key}")
+
+    missing = _unknown_transaction(tool, actor, args, transaction_key)
+    if missing:
+        return missing
 
     dml_params = [
         ("transaction_key", "STRING", transaction_key),
@@ -801,6 +992,9 @@ def set_vendor_override(
     if err:
         return _refuse(tool, actor, args, "invalid-field", error=err,
                        row_key=f"transaction_key={transaction_key}")
+    missing = _unknown_transaction(tool, actor, args, transaction_key)
+    if missing:
+        return missing
 
     dml_params = [
         ("transaction_key", "STRING", transaction_key),
@@ -830,18 +1024,20 @@ def set_flow_override(
     err = validate_transaction_key(transaction_key)
     if err:
         return _refuse(tool, actor, args, "invalid-transaction-key", error=err)
-    if not isinstance(flow_type, str) or not FLOW_TYPE_RE.match(flow_type or ""):
+    if not isinstance(flow_type, str) or flow_type not in FLOW_TYPES:
         return _refuse(
             tool, actor, args, "invalid-flow-type",
-            error=("flow_type must be a lowercase token like earned_income, "
-                   "investment_income, internal_transfer, capital_proceeds, "
-                   "refund_reimbursement, or expense"),
+            error=("flow_type must be one of the values gold understands: "
+                   + ", ".join(sorted(FLOW_TYPES))),
             row_key=f"transaction_key={transaction_key}",
         )
     err = field_error("notes", notes, required=False)
     if err:
         return _refuse(tool, actor, args, "invalid-field", error=err,
                        row_key=f"transaction_key={transaction_key}")
+    missing = _unknown_transaction(tool, actor, args, transaction_key)
+    if missing:
+        return missing
 
     dml_params = [
         ("transaction_key", "STRING", transaction_key),

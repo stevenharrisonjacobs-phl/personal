@@ -180,6 +180,21 @@ Then land it — the writer on each transport is the ONLY write path:
   a no-op, not a second row. If generation cannot produce a valid success
   payload at all, call `record_checkin_failed(reason)` — one line, at most
   300 characters, no long digit runs.
+
+  Read `status`, not just the absence of an error. Four outcomes:
+
+  | `status` | what happened | what to do |
+  |---|---|---|
+  | `ok` / `no-op` | the row landed (or already covered this window) | done |
+  | `refused` | validation or checkpoint gate — `reason` names it | fix, recompose |
+  | `error` | the transaction rolled back; nothing landed | safe to re-issue |
+  | `indeterminate` | the wait timed out and the job's outcome could not be established | **do not re-issue** |
+
+  `indeterminate` is the one that matters: the write may have committed after
+  the door stopped waiting. Re-firing could land a duplicate. Read the target
+  row back first (`saved_query("latest-spend-checkin")`) and only re-issue if
+  nothing is there. A `warning: "completed_after_timeout"` on an `ok` means the
+  opposite — the row IS durable; treat it as a plain success.
 - **Local:** `./scripts/checkin-write.sh success <payload>`. The writer
   recomputes the headline from `sources` and refuses on mismatch — if it
   refuses, fix the payload; never bypass it with direct `bq ` DML.

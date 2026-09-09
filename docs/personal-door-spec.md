@@ -589,11 +589,27 @@ Minted by `scripts/deploy-door.sh secrets`: 32 random bytes per identity
 `PERSONAL_DOOR_MACHINE_TOKEN_<NAME>`, digest folded into the single
 `PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS` secret the door mounts. The runtime SA
 can read the digests, never the raw tokens; each caller's SA gets accessor on
-its own token secret only. Re-running the stage rotates all three tokens —
-callers reading `:latest` heal on their next run. The candidate stage carries
-the grants JSON (canonical value inline in the script, overridable via
-`PERSONAL_DOOR_GRANTS`); the probe stage requires both the unauthenticated 401
-and a bogus-bearer refusal before promote.
+its own token secret only.
+
+The `secrets` stage is **create-if-absent**: re-running it changes nothing that
+already exists. Rotation is its own stage (`rotate-tokens`), because the stage
+also holds `JWT_SIGNING_KEY` and `STORAGE_ENCRYPTION_KEY` — regenerating those
+invalidates every issued JWT and makes every Firestore record encrypted under
+the old Fernet key permanently unreadable. There is deliberately no rotation
+stage for those two: rotating the Fernet key without a re-encrypt migration is
+data loss, not rotation.
+
+The candidate stage **pins every secret to an explicit version** rather than
+`:latest`, because Cloud Run resolves secret env vars when an *instance*
+starts, not once per deploy — under `:latest`, a rotation leaves warm instances
+on the old digests while cold ones take the new ones, and the same caller token
+is then accepted or 401'd depending on which instance answers. Pinning makes
+rotation a deploy: `rotate-tokens` → `build` → `candidate` → `probe` →
+`promote`, with a bounded 401 window between the mint and the promote (callers
+read `:latest` and pick up new tokens immediately). The candidate stage also
+carries the grants JSON (canonical value inline in the script, overridable via
+`PERSONAL_DOOR_GRANTS`); the probe stage requires the unauthenticated 401, a
+bogus-bearer refusal, and the real-token grants matrix before promote.
 
 ### The honest bound
 

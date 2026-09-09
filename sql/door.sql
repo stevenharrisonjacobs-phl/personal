@@ -10,10 +10,14 @@
 --   * Accepted writes insert their audit row inside the SAME multi-statement
 --     transaction as the data DML, so the two land or fail together.
 --     Validation refusals never reach data DML and land a standalone row.
---   * result is enumerated — 'ok' / 'no-op' / 'refused:<reason-code>' plus
---     the affected row key. Neither args nor result ever carry read-back
---     rows, amounts, memos, or free text; digit runs are scrubbed except
---     inside 64-hex transaction keys.
+--   * result is enumerated — 'ok' / 'no-op' / 'refused:<reason-code>' /
+--     'indeterminate' plus the affected row key. 'indeterminate' is the
+--     write whose wait timed out and whose job outcome could not then be
+--     established: it is NOT a failure, and it is NOT a success, so it lands
+--     its own standalone row (the transactional one lands only on commit).
+--     Neither args nor result ever carry read-back rows, amounts, memos, or
+--     free text; digit runs are scrubbed except inside 64-hex transaction
+--     keys.
 --   * Append-only: nothing updates or deletes audit rows.
 CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__FINANCE_DATASET__.door_audit_log` (
   ts TIMESTAMP NOT NULL,

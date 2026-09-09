@@ -14,6 +14,7 @@ import copy
 import inspect
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -470,6 +471,7 @@ def test_duplicate_reclassify_appends_twice_two_audits(monkeypatch):
 
 def test_vendor_override_appends(monkeypatch):
     fx = fake(monkeypatch, [
+        [{"transaction_key": KEY}],                                # existence
         WRITE_OK,
         [{"transaction_key": KEY, "vendor_name": "Shake Shack"}],
     ])
@@ -488,12 +490,82 @@ def test_flow_override_validates_flow_type(monkeypatch):
     assert out["reason"] == "invalid-flow-type"
     assert len(audit_calls(fx)) == 1
 
-    fx2 = fake(monkeypatch, [WRITE_OK, [{"transaction_key": KEY,
-                                         "flow_type": "internal_transfer"}]])
+    fx2 = fake(monkeypatch, [[{"transaction_key": KEY}], WRITE_OK,
+                             [{"transaction_key": KEY,
+                               "flow_type": "internal_transfer"}]])
     out = fw.set_flow_override(KEY, "internal_transfer", actor=ACTOR)
     assert out["status"] == "ok"
     (write,) = write_calls(fx2)
     assert "transaction_flow_overrides" in write["sql"]
+
+
+@pytest.mark.parametrize("typo", ["expnese", "spending", "income", "transfer",
+                                  "internal transfer", "Expense"])
+def test_flow_override_refuses_values_gold_cannot_score(monkeypatch, typo):
+    """A well-SHAPED but unrecognized flow_type is the dangerous one: gold
+    COALESCEs the override straight into flow_type, and every flow_* metric
+    CASE then misses it, so the transaction quietly counts toward nothing."""
+    fx = fake(monkeypatch)
+    out = fw.set_flow_override(KEY, typo, actor=ACTOR)
+    assert out["status"] == "refused"
+    assert out["reason"] == "invalid-flow-type"
+    assert "expense" in out["error"]        # the accepted set is named back
+    assert write_calls(fx) == []
+
+
+def test_flow_type_enum_matches_what_gold_actually_recognizes():
+    """Drift guard: sql/gold.sql is the authority on this vocabulary. Every
+    value its classifier can emit, and every value its metric columns score,
+    must be accepted here — and nothing else may quietly appear on either
+    side without this test being updated deliberately."""
+    gold = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "sql", "gold.sql"), encoding="utf-8").read()
+
+    head, _, _ = gold.partition("END AS flow_type")
+    case_body = head[head.rindex("\n    CASE"):]
+    emitted = set(re.findall(r"THEN '([a-z_]+)'", case_body))
+    assert emitted, "could not locate the flow_type CASE in sql/gold.sql"
+
+    scored = set(re.findall(r"flow_type = '([a-z_]+)'", gold))
+    for group in re.findall(r"flow_type IN \(([^)]*)\)", gold):
+        scored |= set(re.findall(r"'([a-z_]+)'", group))
+
+    assert emitted <= fw.FLOW_TYPES, f"gold emits values the door refuses: {emitted - fw.FLOW_TYPES}"
+    assert scored <= fw.FLOW_TYPES, f"gold scores values the door refuses: {scored - fw.FLOW_TYPES}"
+    assert fw.FLOW_TYPES == emitted | scored, (
+        f"the door accepts values gold never mentions: {fw.FLOW_TYPES - (emitted | scored)}"
+    )
+
+
+@pytest.mark.parametrize("call", [
+    lambda: fw.set_vendor_override(KEY, "Wawa", actor=ACTOR),
+    lambda: fw.set_flow_override(KEY, "expense", actor=ACTOR),
+    lambda: fw.reclassify_transaction(KEY, "Groceries", actor=ACTOR),
+])
+def test_overrides_refuse_a_key_no_transaction_has(monkeypatch, call):
+    """An override keyed to nothing lands forever and classifies nothing —
+    append-only tables never forget an orphan. Every override family checks."""
+    fx = fake(monkeypatch, [[]])  # existence probe finds nothing
+    out = call()
+    assert out["status"] == "refused"
+    assert out["reason"] == "unknown-transaction"
+    assert write_calls(fx) == []
+    (audit,) = audit_calls(fx)
+    assert pval(audit, "audit_result").startswith("refused:unknown-transaction")
+
+
+@pytest.mark.parametrize("call", [
+    lambda: fw.set_vendor_override(KEY, "Wawa", actor=ACTOR),
+    lambda: fw.set_flow_override(KEY, "expense", actor=ACTOR),
+])
+def test_overrides_do_not_guess_when_the_existence_check_itself_fails(monkeypatch, call):
+    def down(sql, params, tool):
+        raise RuntimeError("bq is down")
+
+    monkeypatch.setattr(fw, "_execute", down)
+    out = call()
+    assert out["status"] == "error"
+    assert "could not verify" in out["error"]
 
 
 # ── vendor_category_map / vendor_aliases upserts ────────────────────────────
@@ -678,66 +750,180 @@ def test_audit_failure_does_not_mask_the_refusal(monkeypatch):
     assert "audit" in out
 
 
-def test_job_failed_branch_lands_standalone_audit(monkeypatch):
-    """set_vendor_override has no pre-write read, so the FIRST _execute call
-    is the transactional write: it failing rolls back data AND audit, and the
-    failed attempt must be recorded standalone (the second call)."""
+def _explodes_on_write(monkeypatch, exc):
+    """Fake _execute for set_vendor_override: existence probe succeeds, the
+    transactional write raises `exc`, anything after that succeeds."""
     calls = []
 
     def flaky(sql, params, tool):
         calls.append({"sql": sql, "params": list(params), "tool": tool})
         if len(calls) == 1:
-            raise RuntimeError("backend exploded 1234567890123 mid-transaction")
+            return [{"transaction_key": KEY}]      # existence probe
+        if len(calls) == 2:
+            raise exc
         return []
 
     monkeypatch.setattr(fw, "_execute", flaky)
+    return calls
+
+
+def test_job_failed_branch_lands_standalone_audit(monkeypatch):
+    """The transactional write failing rolls back data AND audit, so the
+    failed attempt must be recorded standalone (the call after it)."""
+    calls = _explodes_on_write(
+        monkeypatch, RuntimeError("backend exploded 1234567890123 mid-transaction"))
     out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
     assert out["status"] == "error"
     assert out["reason"] == "job-failed"
     assert "1234567890123" not in out["error"]  # digit run scrubbed
     assert out["audit"] == "logged"
-    assert len(calls) == 2  # the failed write, then the standalone audit
-    audit = calls[1]
+    assert len(calls) == 3  # existence, the failed write, the standalone audit
+    audit = calls[2]
     assert "door_audit_log" in audit["sql"]
     assert "BEGIN TRANSACTION" not in audit["sql"]
-    assert pval(audit, "audit_result") == "refused:job-failed"
+    assert pval(audit, "audit_result") == f"refused:job-failed key=transaction_key={KEY}"
 
 
 def test_job_failed_audit_failure_is_annotated(monkeypatch):
-    def down(sql, params, tool):
+    calls = []
+
+    def flaky(sql, params, tool):
+        calls.append(sql)
+        if len(calls) == 1:
+            return [{"transaction_key": KEY}]
         raise RuntimeError("bq is down")
 
-    monkeypatch.setattr(fw, "_execute", down)
+    monkeypatch.setattr(fw, "_execute", flaky)
     out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
     assert out["status"] == "error"
     assert out["reason"] == "job-failed"
     assert out["audit"].startswith("audit-write-failed")
 
 
-def test_result_timeout_routes_to_job_failed(monkeypatch):
-    calls = []
+# ── a timed-out write is not a rolled-back write ────────────────────────────
+#
+# `job.result(timeout=)` expiring says only that the CLIENT stopped waiting.
+# BigQuery may commit a moment later. Calling that an error invites a retry
+# that appends a second override row or lands a duplicate check-in, so every
+# timeout is reconciled against the job's own record before it is named.
 
-    def timing_out(sql, params, tool):
-        calls.append(sql)
-        if len(calls) == 1:
-            raise TimeoutError("job did not finish inside the result timeout")
-        return []
 
-    monkeypatch.setattr(fw, "_execute", timing_out)
+def _job_outcome_is(monkeypatch, outcome):
+    seen = {}
+
+    def fake_outcome(job_id):
+        seen["job_id"] = job_id
+        return outcome
+
+    monkeypatch.setattr(fw, "_job_outcome", fake_outcome)
+    return seen
+
+
+def test_timeout_whose_job_committed_reports_success_not_error(monkeypatch):
+    calls = _explodes_on_write(
+        monkeypatch, fw.JobIndeterminate("job did not finish", job_id="door-job-1"))
+    seen = _job_outcome_is(monkeypatch, {"state": "committed",
+                                         "write_result": "ok", "error": None})
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "ok"
+    assert out["warning"] == "completed_after_timeout"
+    assert out["job_id"] == "door-job-1"
+    assert seen["job_id"] == "door-job-1"
+    assert "do not retry" in out["note"]
+    # The audit row committed inside the same transaction — no second one.
+    assert [c for c in calls
+            if "door_audit_log" in c["sql"] and "BEGIN TRANSACTION" not in c["sql"]] == []
+
+
+def test_timeout_whose_job_committed_a_noop_says_no_op(monkeypatch):
+    _explodes_on_write(monkeypatch,
+                       fw.JobIndeterminate("timed out", job_id="door-job-2"))
+    _job_outcome_is(monkeypatch, {"state": "committed",
+                                  "write_result": "no-op", "error": None})
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "no-op"
+    assert out["warning"] == "completed_after_timeout"
+
+
+def test_timeout_whose_job_really_failed_is_the_job_failed_path(monkeypatch):
+    calls = _explodes_on_write(monkeypatch,
+                               fw.JobIndeterminate("timed out", job_id="door-job-3"))
+    _job_outcome_is(monkeypatch, {"state": "failed", "write_result": None,
+                                  "error": "resources exceeded"})
     out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
     assert out["status"] == "error"
     assert out["reason"] == "job-failed"
+    assert "resources exceeded" in out["error"]
+    assert pval(calls[2], "audit_result") == f"refused:job-failed key=transaction_key={KEY}"
 
 
-def test_execute_wires_named_timeouts():
-    """The real touchpoint bounds both the submission RPC and the wait for the
-    result, so a stuck backend surfaces as job-failed instead of hanging the
-    tool while holding transaction locks."""
+@pytest.mark.parametrize("state", ["running", "unknown"])
+def test_unresolvable_timeout_is_indeterminate_never_error(monkeypatch, state):
+    calls = _explodes_on_write(monkeypatch,
+                               fw.JobIndeterminate("timed out", job_id="door-job-4"))
+    _job_outcome_is(monkeypatch, {"state": state, "write_result": None, "error": None})
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "indeterminate"
+    assert out["reason"] == "job-outcome-unknown"
+    assert out["job_id"] == "door-job-4"
+    assert "Do NOT retry blindly" in out["note"]
+    # The attempt still leaves a trail: the transactional audit row lands only
+    # if the job commits, so an indeterminate write records its own.
+    audit = calls[2]
+    assert "door_audit_log" in audit["sql"]
+    assert "BEGIN TRANSACTION" not in audit["sql"]
+    assert pval(audit, "audit_result") == "indeterminate key=transaction_key=%s job=door-job-4" % KEY
+
+
+def test_indeterminate_checkin_never_reports_a_landed_row(monkeypatch):
+    """record_checkin must not claim a row landed — nor claim one did not —
+    when its own write timed out unresolvably."""
+    calls = []
+
+    def flaky(sql, params, tool):
+        calls.append(sql)
+        if len(calls) == 1:
+            return [{"checkpoint": "2026-09-07T10:00:00Z"}]   # checkpoint probe
+        if len(calls) == 2:
+            raise fw.JobIndeterminate("timed out", job_id="door-job-5")
+        return []
+
+    monkeypatch.setattr(fw, "_execute", flaky)
+    _job_outcome_is(monkeypatch, {"state": "unknown", "write_result": None, "error": None})
+    out = fw.record_checkin(checkin_payload(), actor=ACTOR)
+    assert out["status"] == "indeterminate"
+    assert "row" not in out
+    assert len(calls) == 3  # probe, the timed-out write, the standalone audit
+
+
+def test_execute_converts_only_timeouts_to_indeterminate():
+    """The real touchpoint bounds the submission RPC and the wait for the
+    result, and turns BOTH bounds — and only those — into JobIndeterminate.
+    Every other failure remains a genuine failure."""
     assert fw.JOB_SUBMIT_TIMEOUT == 60
     assert fw.JOB_RESULT_TIMEOUT == 240
     src = inspect.getsource(fw._execute)
     assert "timeout=JOB_SUBMIT_TIMEOUT" in src
     assert "timeout=JOB_RESULT_TIMEOUT" in src
+    assert src.count("raise JobIndeterminate") == 2
+    assert src.count("except _WaitTimeout") == 2
+    # the ONLY broad handler is the best-effort cancel; nothing else in
+    # _execute may quietly swallow a real failure into a timeout shape
+    assert src.count("except Exception") == 1 and "job.cancel()" in src
+    # A client-side job id is what keeps a job nameable when the SUBMIT RPC is
+    # the thing that timed out — without it, that job is unreconcilable.
+    assert "job_id=job_id" in src
+    assert fw._job_id("set_flow_override").startswith("door-set_flow_override-")
+    assert fw._job_id("x") != fw._job_id("x")
+
+
+def test_job_outcome_never_raises(monkeypatch):
+    """Reconciliation is a best-effort question, not a second failure mode:
+    it answers 'unknown' rather than throwing inside the timeout handler."""
+    monkeypatch.setattr(fw.finance_native, "_bq",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no creds")))
+    assert fw._job_outcome("door-job-9") == {"state": "unknown",
+                                             "write_result": None, "error": None}
 
 
 # ── the service gate ─────────────────────────────────────────────────────────
