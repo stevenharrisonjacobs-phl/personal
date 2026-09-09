@@ -15,7 +15,12 @@ client_secret*.json
 docs/
 projects/
 sql/
-scripts/
+# scripts/* (not scripts/) so the one file the Dockerfile COPYs can be
+# re-included: gitignore syntax cannot negate a path whose PARENT
+# directory is excluded, so `scripts/` + `!scripts/x` silently keeps x out
+# and the build fails at the COPY with 'file does not exist'.
+scripts/*
+!scripts/checkin_validate.py
 tests/
 cowork/
 orchestration/
