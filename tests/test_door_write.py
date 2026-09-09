@@ -977,3 +977,228 @@ def test_service_stamps_oauth_actor_onto_the_audit_row(monkeypatch):
     assert pval(write, "audit_identity") == ENROLLED
     assert pval(write, "audit_client_id") == "claude-ai"
     assert pval(write, "audit_window_state") == "human"
+
+
+# ── work facts: consumption and payments ─────────────────────────────────────
+#
+# Two tables, not one with a lens column, because the accrual/cash boundary is
+# real: two tables cannot be summed together by accident.
+
+COST_FACT = {"cost_date": "2026-09-09", "provider": "gcp", "lens": "billed",
+             "cost_usd": 2.51, "source": "vantage"}
+PAYMENT = {"payment_id": "mercury-txn-0001abcd", "posted_date": "2026-09-09",
+           "counterparty": "Webflow Inc", "provider": None, "venture": "bobsled",
+           "amount_usd": 42.0, "account": "credit"}
+
+
+def cost_facts(*overrides):
+    return [{**COST_FACT, **o} for o in (overrides or ({},))]
+
+
+def payments(*overrides):
+    return [{**PAYMENT, **o} for o in (overrides or ({},))]
+
+
+def test_work_costs_upserts_on_date_provider_lens(monkeypatch):
+    fx = fake(monkeypatch, [WRITE_OK])
+    out = fw.record_work_costs(
+        cost_facts({}, {"provider": "anthropic", "cost_usd": 0.6}),
+        run_ts="2026-09-09T10:05:00Z", actor=ACTOR)
+    assert out["status"] == "ok"
+    assert out["written"] == 2
+    (write,) = write_calls(fx)
+    assert "work" in write["sql"] and "daily_costs" in write["sql"]
+    assert "MERGE" in write["sql"]
+    # the key is all three columns — a lens alone must not overwrite the other
+    assert "t.cost_date = s.cost_date" in write["sql"]
+    assert "t.provider  = s.provider" in write["sql"]
+    assert "t.lens      = s.lens" in write["sql"]
+    assert "DELETE" not in write["sql"].upper()
+    assert pval(write, "audit_result_ok") == "ok key=cost_date=2026-09-09"
+
+
+def test_work_costs_row_key_spans_a_date_range(monkeypatch):
+    fx = fake(monkeypatch, [WRITE_OK])
+    fw.record_work_costs(cost_facts({"cost_date": "2026-09-01"},
+                                    {"cost_date": "2026-09-09"}), actor=ACTOR)
+    (write,) = write_calls(fx)
+    assert pval(write, "audit_result_ok") == "ok key=cost_date=2026-09-01..2026-09-09"
+
+
+def test_work_costs_refuses_a_duplicate_key_in_one_batch(monkeypatch):
+    """BigQuery's own error for this is 'must match at most one source row',
+    which names neither the table nor the key. Catch it where we can say which."""
+    fx = fake(monkeypatch)
+    out = fw.record_work_costs(cost_facts({}, {"cost_usd": 9.99}), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert out["reason"] == "invalid-facts"
+    assert "duplicate" in out["error"] and "2026-09-09/gcp/billed" in out["error"]
+    assert write_calls(fx) == []
+
+
+@pytest.mark.parametrize("bad,frag", [
+    ({"lens": "cash"}, "lens must be one of"),          # cash lives in payments
+    ({"lens": "Billed"}, "lens must be one of"),
+    ({"source": "mercury"}, "source must be one of"),
+    ({"provider": "OpenAI"}, "provider must be a lowercase key"),
+    ({"cost_date": "09/09/2026"}, "cost_date must be YYYY-MM-DD"),
+    ({"cost_usd": "2.51"}, "must be a number"),
+    ({"cost_usd": True}, "must be a number"),
+    ({"cost_usd": -1}, "must be >= 0"),
+    ({"cost_usd": float("nan")}, "must be finite"),
+    ({"cost_usd": 5_000_000}, "implausibly large"),
+])
+def test_work_costs_validation(monkeypatch, bad, frag):
+    fx = fake(monkeypatch)
+    out = fw.record_work_costs(cost_facts(bad), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert frag in out["error"]
+    assert write_calls(fx) == []
+
+
+def test_work_costs_rejects_empty_and_oversized_batches(monkeypatch):
+    fake(monkeypatch)
+    assert fw.record_work_costs([], actor=ACTOR)["status"] == "refused"
+    assert fw.record_work_costs("not a list", actor=ACTOR)["status"] == "refused"
+    big = [{**COST_FACT, "cost_date": f"2026-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}",
+            "provider": f"p{i}"} for i in range(fw.MAX_FACTS + 1)]
+    out = fw.record_work_costs(big, actor=ACTOR)
+    assert out["status"] == "refused" and "cap is" in out["error"]
+
+
+def test_work_payments_keys_on_the_providers_own_id(monkeypatch):
+    fx = fake(monkeypatch, [WRITE_OK])
+    out = fw.record_work_payments(payments(), run_ts="2026-09-09T10:05:00Z", actor=ACTOR)
+    assert out["status"] == "ok" and out["written"] == 1
+    (write,) = write_calls(fx)
+    assert "payments" in write["sql"] and "MERGE" in write["sql"]
+    assert "ON t.payment_id = s.payment_id" in write["sql"]
+    assert "DELETE" not in write["sql"].upper()
+
+
+def test_work_payments_same_id_twice_is_idempotent_by_construction(monkeypatch):
+    """Re-pulling an overlapping Mercury window must not double-count a
+    subscription. The key does that; no window arithmetic involved."""
+    fx = fake(monkeypatch, [WRITE_OK, WRITE_NOOP])
+    first = fw.record_work_payments(payments(), actor=ACTOR)
+    second = fw.record_work_payments(payments(), actor=ACTOR)
+    assert first["status"] == "ok"
+    assert second["status"] == "no-op"
+    assert all("MERGE" in w["sql"] for w in write_calls(fx))
+
+
+def test_work_payments_refuses_a_negative_amount(monkeypatch):
+    """An inflow reaching this table means the upstream counting rules were
+    skipped — and the IO AUTOPAY settlement landing beside the card charges
+    double-counts every subscription."""
+    fx = fake(monkeypatch)
+    out = fw.record_work_payments(payments({"amount_usd": -42.0}), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert "outflows" in out["error"] and "inflows do not belong" in out["error"]
+    assert write_calls(fx) == []
+
+
+def test_work_payments_requires_a_posted_date(monkeypatch):
+    """A pending authorization has no postedAt. Its count belongs in the
+    report; its amount must never land as settled cash."""
+    fx = fake(monkeypatch)
+    out = fw.record_work_payments(payments({"posted_date": None}), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert "pending authorization" in out["error"]
+    assert write_calls(fx) == []
+
+
+def test_work_payments_surfaces_unmapped_counterparties(monkeypatch):
+    fake(monkeypatch, [WRITE_OK])
+    out = fw.record_work_payments(
+        payments({"venture": "unmapped", "counterparty": "Canva Pty"}), actor=ACTOR)
+    assert out["status"] == "ok"
+    assert out["unmapped_counterparties"] == ["Canva Pty"]
+    assert "never guessed" in out["note"]
+
+
+def test_work_payments_allows_a_null_provider(monkeypatch):
+    """Webflow bills cash but has no consumption side — a real payment with
+    nothing to reconcile against, not a mapping failure."""
+    fake(monkeypatch, [WRITE_OK])
+    assert fw.record_work_payments(payments({"provider": None}), actor=ACTOR)["status"] == "ok"
+
+
+@pytest.mark.parametrize("bad,frag", [
+    ({"payment_id": "short"}, "payment_id"),
+    ({"venture": "plumgrowth"}, "venture must be one of"),
+    ({"account": "savings"}, "account must be one of"),
+    ({"provider": "OpenAI"}, "provider must be a lowercase key"),
+    ({"counterparty": ""}, "counterparty"),
+])
+def test_work_payments_validation(monkeypatch, bad, frag):
+    fx = fake(monkeypatch)
+    out = fw.record_work_payments(payments(bad), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert frag in out["error"]
+    assert write_calls(fx) == []
+
+
+def test_work_payments_refuses_duplicate_ids_in_one_batch(monkeypatch):
+    fx = fake(monkeypatch)
+    out = fw.record_work_payments(payments({}, {}), actor=ACTOR)
+    assert out["status"] == "refused"
+    assert "duplicate payment_id" in out["error"]
+    assert write_calls(fx) == []
+
+
+@pytest.mark.parametrize("bad_ts", ["not-a-timestamp", "", 12345])
+def test_work_run_ts_is_refused_not_silently_dropped(monkeypatch, bad_ts):
+    fx = fake(monkeypatch)
+    out = fw.record_work_costs(cost_facts(), run_ts=bad_ts, actor=ACTOR)
+    assert out["status"] == "refused"
+    assert "run_ts" in out["error"]
+    assert write_calls(fx) == []
+
+
+def test_work_writes_carry_audit_in_the_same_transaction(monkeypatch):
+    for call in (lambda: fw.record_work_costs(cost_facts(), actor=ACTOR),
+                 lambda: fw.record_work_payments(payments(), actor=ACTOR)):
+        fx = fake(monkeypatch, [WRITE_OK])
+        call()
+        (write,) = write_calls(fx)
+        assert "BEGIN TRANSACTION" in write["sql"]
+        assert "door_audit_log" in write["sql"]
+
+
+def test_work_audit_args_carry_no_amounts(monkeypatch):
+    """The audit row records shape, never money — same rule as every other
+    write tool."""
+    fx = fake(monkeypatch, [WRITE_OK])
+    fw.record_work_costs(cost_facts(), actor=ACTOR)
+    (write,) = write_calls(fx)
+    args = pval(write, "audit_args")
+    assert "2.51" not in args
+    assert "gcp" in args and "fact_count" in args
+
+
+def test_misspelled_provider_is_accepted_but_surfaced(monkeypatch):
+    """'openai' is shape-valid; only the spelling is wrong. A closed enum would
+    block genuinely new providers, so the tool writes it and SAYS SO — a silent
+    accept would leave open_ai and openai as two half-priced series."""
+    fake(monkeypatch, [WRITE_OK])
+    out = fw.record_work_costs(cost_facts({"provider": "openai"}), actor=ACTOR)
+    assert out["status"] == "ok"
+    assert out["unknown_providers"] == ["openai"]
+    assert "open_ai" in out["note"]
+
+
+def test_known_providers_are_not_flagged(monkeypatch):
+    fake(monkeypatch, [WRITE_OK])
+    out = fw.record_work_costs(
+        [{**COST_FACT, "provider": p} for p in sorted(fw.KNOWN_PROVIDERS)], actor=ACTOR)
+    assert out["status"] == "ok"
+    assert "unknown_providers" not in out
+
+
+def test_known_providers_match_what_vantage_actually_returns():
+    """Vantage's provider keys are the join key for work.payments too, so the
+    door's vocabulary must match the source's spelling exactly. Verified live
+    2026-09-09: list-cost-providers returned anthropic, gcp, open_ai."""
+    assert {"anthropic", "gcp", "open_ai"} <= fw.KNOWN_PROVIDERS
+    assert "openai" not in fw.KNOWN_PROVIDERS

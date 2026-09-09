@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from door import finance_write as fw  # noqa: E402
+from door import service as door_service  # noqa: E402
 from door.auth import (  # noqa: E402
     MACHINE_CLAIM,
     DoorConfigurationError,
@@ -37,6 +38,7 @@ from door.auth import (  # noqa: E402
 from door.service import (  # noqa: E402
     CHECKIN_WRITE_TOOLS,
     CLASSIFICATION_WRITE_TOOLS,
+    WORK_WRITE_TOOLS,
     READ_TOOLS,
     WRITE_TOOLS,
     DoorPolicy,
@@ -156,9 +158,22 @@ def checkin_payload(**overrides):
 def test_tool_families_cover_the_full_catalog():
     assert CHECKIN_WRITE_TOOLS == {"record_checkin", "record_checkin_failed"}
     assert len(CLASSIFICATION_WRITE_TOOLS) == 7
-    assert WRITE_TOOLS == CHECKIN_WRITE_TOOLS | CLASSIFICATION_WRITE_TOOLS
+    assert WORK_WRITE_TOOLS == {"record_work_costs", "record_work_payments"}
+    assert WRITE_TOOLS == (
+        CHECKIN_WRITE_TOOLS | CLASSIFICATION_WRITE_TOOLS | WORK_WRITE_TOOLS)
     assert len(READ_TOOLS) == 6
     assert not (WRITE_TOOLS & READ_TOOLS)
+
+
+def test_work_writes_are_not_window_gated():
+    """The morning routine fires ~06:05 ET, BEFORE the 06:45 classification
+    window opens. Gating work facts would refuse them every single morning, so
+    they sit with the check-in tools rather than the classification ones."""
+    assert not (WORK_WRITE_TOOLS & CLASSIFICATION_WRITE_TOOLS)
+    src = inspect.getsource(door_service)
+    # exactly one window check, and it names the classification family only
+    assert src.count("not self._window_open(grant)") == 1
+    assert "tool in CLASSIFICATION_WRITE_TOOLS and not self._window_open" in src
 
 
 def test_enrolled_oauth_identity_keeps_everything_at_any_hour():

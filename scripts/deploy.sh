@@ -20,6 +20,9 @@ fi
 if ! bq --project_id="$GCP_PROJECT_ID" show "$GCP_PROJECT_ID:$GOLD_DATASET" >/dev/null 2>&1; then
   bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" mk --dataset "$GOLD_DATASET"
 fi
+if ! bq --project_id="$GCP_PROJECT_ID" show "$GCP_PROJECT_ID:${WORK_DATASET:-work}" >/dev/null 2>&1; then
+  bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" mk --dataset "${WORK_DATASET:-work}"
+fi
 
 make_definition() {
   local tab_name="$1"
@@ -119,6 +122,7 @@ render_sql "$ROOT_DIR/sql/gold.sql" > "$temp_dir/gold.sql"
 render_sql "$ROOT_DIR/sql/reviewer.sql" > "$temp_dir/reviewer.sql"
 render_sql "$ROOT_DIR/sql/checkin.sql" > "$temp_dir/checkin.sql"
 render_sql "$ROOT_DIR/sql/door.sql" > "$temp_dir/door.sql"
+render_sql "$ROOT_DIR/sql/work.sql" > "$temp_dir/work.sql"
 
 bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/refresh.sql"
@@ -136,6 +140,8 @@ bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/checkin.sql"
 bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/door.sql"
+bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
+  --use_legacy_sql=false < "$temp_dir/work.sql"
 
 schedule_params="$(jq -n \
   --rawfile query "$temp_dir/refresh.sql" \

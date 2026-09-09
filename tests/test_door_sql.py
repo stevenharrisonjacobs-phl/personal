@@ -89,11 +89,28 @@ def test_comment_cannot_hide_a_second_statement():
 
 
 def test_every_whitelisted_source_is_two_part():
-    """SOURCES keys are 'dataset.table' and only name governed datasets."""
+    """SOURCES keys are 'dataset.table' and only name governed datasets.
+
+    Three governed datasets now: finance and gold (personal) and work
+    (Plum Growth). tiller_raw is deliberately absent — see the next test.
+    """
     for name in fn.SOURCES:
         parts = name.split(".")
         assert len(parts) == 2, name
-        assert parts[0] in (fn.FINANCE, fn.GOLD), name
+        assert parts[0] in (fn.FINANCE, fn.GOLD, fn.WORK), name
+
+
+def test_work_dataset_is_separate_from_the_personal_ones():
+    """work is its own dataset, not a prefix inside finance. In BigQuery the
+    dataset is the access-control unit, so this is what lets work data be
+    granted to a bookkeeper without exposing a personal transaction."""
+    assert fn.WORK not in (fn.FINANCE, fn.GOLD)
+    work_tables = [n for n in fn.SOURCES if n.startswith(f"{fn.WORK}.")]
+    assert sorted(work_tables) == [f"{fn.WORK}.daily_costs",
+                                   f"{fn.WORK}.payments",
+                                   f"{fn.WORK}.v_consumed_vs_paid"]
+    # and no personal table smuggled a work_ prefix instead
+    assert not [n for n in fn.SOURCES if ".work_" in n]
 
 
 def test_no_raw_dataset_anywhere_in_the_catalog():

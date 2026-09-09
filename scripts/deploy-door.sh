@@ -334,7 +334,10 @@ candidate)
   # window. Machine identities absent from this map are refused everything.
   # Override by exporting PERSONAL_DOOR_GRANTS before this stage; the default
   # is the canonical dial:
-  #   checkin-routine   check-in writes and granted reads always;
+  #   checkin-routine   check-in AND work-fact writes and granted reads
+  #                     always (work facts are observations, not
+  #                     classification, so they are NOT window-gated — the
+  #                     routine fires ~06:05, before the window opens);
   #                     classification writes only inside 06:45-23:00
   #                     America/New_York
   #   checkin-watchdog  may record a FAILED check-in; reads ONLY saved_query +
@@ -347,7 +350,7 @@ candidate)
   # run_finance_query (arbitrary read-only SELECT over the whole finance
   # mirror) is granted to checkin-routine ONLY — least privilege for the
   # watchdog and smoke is the enumerated saved-query surface, not SELECT *.
-  default_grants='{"checkin-routine":{"write_tools":["record_checkin","record_checkin_failed","reclassify_transaction","set_vendor_override","set_flow_override","add_vendor_mapping","add_vendor_alias","add_classification_rule","add_vendor_rule"],"read_tools":["run_finance_query","saved_query","list_saved_queries","feed_health"],"window":"06:45-23:00"},"checkin-watchdog":{"write_tools":["record_checkin_failed"],"read_tools":["saved_query","list_saved_queries"],"window":"always"},"checkin-smoke":{"write_tools":[],"read_tools":["saved_query","list_saved_queries","feed_health"],"window":"always"}}'
+  default_grants='{"checkin-routine":{"write_tools":["record_checkin","record_checkin_failed","record_work_costs","record_work_payments","reclassify_transaction","set_vendor_override","set_flow_override","add_vendor_mapping","add_vendor_alias","add_classification_rule","add_vendor_rule"],"read_tools":["run_finance_query","saved_query","list_saved_queries","feed_health"],"window":"06:45-23:00"},"checkin-watchdog":{"write_tools":["record_checkin_failed"],"read_tools":["saved_query","list_saved_queries"],"window":"always"},"checkin-smoke":{"write_tools":[],"read_tools":["saved_query","list_saved_queries","feed_health"],"window":"always"}}'
   GRANTS="${PERSONAL_DOOR_GRANTS:-$default_grants}"
 
   # Pin every secret to the version that is current RIGHT NOW, never :latest.

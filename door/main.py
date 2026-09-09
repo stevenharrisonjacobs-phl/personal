@@ -310,6 +310,71 @@ def add_vendor_rule(
     )
 
 
+@mcp.tool
+def record_work_costs(
+    facts: list[dict[str, Any]],
+    run_ts: str | None = None,
+) -> dict[str, Any]:
+    """Record work consumption facts into work.daily_costs.
+
+    One row per (cost_date, provider, lens). `facts` is a list of objects:
+      cost_date  YYYY-MM-DD, calendar day in America/New_York
+      provider   lowercase key — gcp, anthropic, open_ai, apify, langsmith.
+                 Must match Vantage's spelling; work.payments joins on it.
+      lens       'billed'    — what the provider charged (Vantage)
+                 'estimated' — usage computed before anyone billed it
+      cost_usd   number >= 0
+      source     'vantage' | 'collector'
+
+    UPSERT on the key: re-sending a day REPLACES its figure, which is correct
+    because billed costs restate as ingestion catches up. Sending the same key
+    twice in one batch is refused — BigQuery's own error for that names
+    neither the table nor the key.
+
+    'billed' and 'estimated' are kept for the same day on purpose and are never
+    summed; their difference is the only way to learn an estimate was wrong.
+    Cash belongs in record_work_payments, not here.
+
+    Not window-gated: the morning routine writes these before the 06:45
+    classification window opens.
+    """
+    return service.record_work_costs(current_identity(), facts, run_ts)
+
+
+@mcp.tool
+def record_work_payments(
+    payments: list[dict[str, Any]],
+    run_ts: str | None = None,
+) -> dict[str, Any]:
+    """Record work payments — cash out of the Plum Growth account — into
+    work.payments. Subscriptions included.
+
+    One row per payment, keyed on the provider's own transaction id, so
+    re-pulling an overlapping window is idempotent by construction. `payments`
+    is a list of objects:
+      payment_id    the provider's own id (Mercury transaction id)
+      posted_date   YYYY-MM-DD, the POSTED date. A pending authorization has
+                    none and does not belong here — report its count, never
+                    its amount.
+      counterparty  raw, exactly as the source reports it
+      provider      lowercase key joining to work.daily_costs.provider, or
+                    null when the counterparty bills no consumption provider
+      venture       'snapfix' | 'bobsled' | 'unmapped' — never guessed
+      amount_usd    positive number; this table is OUTFLOWS ONLY
+      account       'checking' | 'credit'
+
+    Apply the counting rules in the spend-checkin skill's mercury-mapping
+    context BEFORE calling: exclude the IO AUTOPAY settlement pair and every
+    inflow. A negative amount is refused rather than silently signed, because a
+    settlement row landing beside the card charges double-counts every
+    subscription.
+
+    Unmapped counterparties come back in the response for review.
+    Not window-gated.
+    """
+    return service.record_work_payments(current_identity(), payments, run_ts)
+
+
 if __name__ == "__main__":
     mcp.run(
         transport="http",
