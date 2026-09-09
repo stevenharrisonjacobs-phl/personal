@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Cloud dispatch: the sandbox image carries no Cloud SDK. When `bq` is absent,
+# hand the entire run to the portable Python collector with identical argv —
+# BEFORE any env sourcing or local-path assumptions below.
+if ! command -v bq >/dev/null 2>&1; then
+  _here="${BASH_SOURCE[0]%/*}"; [[ "$_here" == "${BASH_SOURCE[0]}" ]] && _here="."
+  exec python3 "$_here/spend_checkin_costs.py" "$@"
+fi
+
 # spend-checkin-costs.sh — deterministic live-cost pulls for the daily spend
 # check-in: BigQuery scanning (snapfix-agents), LLM run costs via LangSmith,
 # and Apify actor runs. Each is pulled for the requested window AND the same
