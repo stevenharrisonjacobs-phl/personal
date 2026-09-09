@@ -284,8 +284,11 @@ def test_prev_window_spans_month_boundary():
 
 def test_mercury_window_params_month_boundary():
     params = mercury_pull.window_params("2026-09-03T00:00:00Z", "2026-09-04T00:00:00Z")
-    assert params["window"] == ("2026-09-03", "2026-09-04")
-    assert params["prev"] == ("2026-08-27", "2026-08-28")
+    assert params["window_ts"] == (ts("2026-09-03T00:00:00Z"), ts("2026-09-04T00:00:00Z"))
+    assert params["prev_ts"] == (ts("2026-08-27T00:00:00Z"), ts("2026-08-28T00:00:00Z"))
+    # createdAt fetch params widened -30d/+1d around each posted window
+    assert params["fetch"] == ("2026-08-04", "2026-09-05")
+    assert params["prev_fetch"] == ("2026-07-28", "2026-08-29")
 
 
 # -- mercury_pull: request construction and outputs ---------------------------
@@ -293,11 +296,21 @@ def test_mercury_window_params_month_boundary():
 ACCOUNTS = {"accounts": [{"id": "acct-1", "name": "Checking"},
                          {"id": "acct-2", "name": "Savings"}]}
 
+# The API params are createdAt-axis, so every fetch returns the same widened
+# superset; the pull must filter client-side on postedAt.
+MERCURY_TXNS = [
+    {"id": "txn-window", "createdAt": "2026-09-05T09:00:00Z",   # created BEFORE
+     "postedAt": "2026-09-07T12:00:00Z"},                       # posted inside
+    {"id": "txn-prev", "postedAt": "2026-08-31T15:00:00Z"},     # baseline window
+    {"id": "txn-unposted", "postedAt": None},                   # not posted yet
+    {"id": "txn-outside", "postedAt": "2026-09-01T12:00:00Z"},  # neither window
+]
+
 
 def mercury_responses(url):
     if url.endswith("/accounts"):
         return ACCOUNTS
-    return {"total": 1, "transactions": [{"id": "txn-for " + url.split("/account/")[1].split("/")[0]}]}
+    return {"total": len(MERCURY_TXNS), "transactions": list(MERCURY_TXNS)}
 
 
 def run_mercury(tmp_path, env, http_get):
@@ -325,8 +338,9 @@ def test_mercury_request_construction_and_files(tmp_path):
         q = parse_qs(parsed.query)
         windows_seen.add((q["start"][0], q["end"][0]))
         assert q["limit"] == ["500"] and q["offset"] == ["0"]
-    assert windows_seen == {("2026-09-07", "2026-09-08"),   # requested window
-                            ("2026-08-31", "2026-09-01")}   # week-prior baseline
+    # createdAt params are WIDENED (-30d/+1d) around each posted window
+    assert windows_seen == {("2026-08-08", "2026-09-09"),   # requested window
+                            ("2026-08-01", "2026-09-02")}   # week-prior baseline
 
     out = tmp_path / "out"
     assert json.loads((out / "accounts.json").read_text()) == ACCOUNTS
@@ -334,9 +348,16 @@ def test_mercury_request_construction_and_files(tmp_path):
     prev = json.loads((out / "transactions-prev.json").read_text())
     assert set(window["accounts"]) == {"acct-1", "acct-2"}
     assert window["window"]["start"] == START and window["window"]["end"] == END
-    assert window["window"]["posted_start"] == "2026-09-07"
-    assert prev["window"]["posted_start"] == "2026-08-31"
-    assert prev["window"]["posted_end"] == "2026-09-01"
+    assert window["window"]["created_fetch_start"] == "2026-08-08"
+    assert window["window"]["created_fetch_end"] == "2026-09-09"
+    assert prev["window"]["start"] == "2026-08-31T10:00:00Z"
+    assert prev["window"]["end"] == "2026-09-01T10:00:00Z"
+    assert prev["window"]["created_fetch_start"] == "2026-08-01"
+    assert prev["window"]["created_fetch_end"] == "2026-09-02"
+    # postedAt-filtered payloads: each file holds only its own window's txns
+    for acct in ("acct-1", "acct-2"):
+        assert [t["id"] for t in window["accounts"][acct]] == ["txn-window"]
+        assert [t["id"] for t in prev["accounts"][acct]] == ["txn-prev"]
 
 
 def test_mercury_masked_mode_no_local_auth_header(tmp_path):
@@ -380,7 +401,9 @@ def test_mercury_network_error_named(tmp_path, capsys):
 
 
 def test_mercury_pagination_defensive(tmp_path):
-    pages = {"0": [{"id": "t1"}, {"id": "t2"}], "2": [{"id": "t3"}]}
+    posted = "2026-09-07T12:00:00Z"  # inside the requested window
+    pages = {"0": [{"id": "t1", "postedAt": posted}, {"id": "t2", "postedAt": posted}],
+             "2": [{"id": "t3", "postedAt": posted}]}
 
     def http_get(url, headers):
         if url.endswith("/accounts"):
@@ -392,6 +415,104 @@ def test_mercury_pagination_defensive(tmp_path):
     assert code == 0
     window = json.loads((tmp_path / "out" / "transactions-window.json").read_text())
     assert [t["id"] for t in window["accounts"]["acct-1"]] == ["t1", "t2", "t3"]
+
+
+def test_mercury_pagination_exhaustion_fails_loud_no_files(tmp_path, capsys):
+    """A feed that never satisfies the break condition must NOT silently
+    return partial data — nonzero exit, one stderr line, no output files."""
+    def http_get(url, headers):
+        if url.endswith("/accounts"):
+            return {"accounts": [{"id": "acct-1"}]}
+        return {"total": 10**9,  # never reachable: every page has one txn
+                "transactions": [{"id": "t", "postedAt": "2026-09-07T12:00:00Z"}]}
+
+    code = run_mercury(tmp_path, {"MERCURY_API_TOKEN": "mc-test-token"}, http_get)
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "acct-1" in err and "pagination" in err
+    assert err.count("\n") == 1              # one-line stderr
+    assert not (tmp_path / "out").exists()   # no partial output left behind
+
+
+# -- mercury_pull: postedAt-axis client-side filtering (#10) ------------------
+
+def test_mercury_posted_axis_filtering(tmp_path):
+    """createdAt is irrelevant to membership: created-before-window but
+    posted-inside is kept; posted-outside and null/absent postedAt drop."""
+    code = run_mercury(tmp_path, {"MERCURY_API_TOKEN": "mc-test-token"},
+                       make_http_get(mercury_responses))
+    assert code == 0
+    out = tmp_path / "out"
+    window = json.loads((out / "transactions-window.json").read_text())
+    prev = json.loads((out / "transactions-prev.json").read_text())
+    # txn-window: createdAt 09-05 (before window start) + postedAt inside → kept
+    assert [t["id"] for t in window["accounts"]["acct-1"]] == ["txn-window"]
+    # txn-outside (posted between the windows) and txn-unposted (null) dropped
+    assert [t["id"] for t in prev["accounts"]["acct-1"]] == ["txn-prev"]
+
+
+def test_mercury_posted_boundaries_match_collector_bucketing(tmp_path):
+    """[start, end): posted exactly AT window_start is kept, AT window_end is
+    excluded — same half-open convention as spend_checkin_costs.py."""
+    boundary_txns = [
+        {"id": "at-start", "postedAt": START},                       # kept
+        {"id": "at-end", "postedAt": END},                           # excluded
+        {"id": "at-prev-start", "postedAt": "2026-08-31T10:00:00Z"},  # kept (prev)
+        {"id": "at-prev-end", "postedAt": "2026-09-01T10:00:00Z"},    # excluded
+    ]
+
+    def http_get(url, headers):
+        if url.endswith("/accounts"):
+            return {"accounts": [{"id": "acct-1"}]}
+        return {"total": len(boundary_txns), "transactions": list(boundary_txns)}
+
+    code = run_mercury(tmp_path, {"MERCURY_API_TOKEN": "mc-test-token"}, http_get)
+    assert code == 0
+    window = json.loads((tmp_path / "out" / "transactions-window.json").read_text())
+    prev = json.loads((tmp_path / "out" / "transactions-prev.json").read_text())
+    assert [t["id"] for t in window["accounts"]["acct-1"]] == ["at-start"]
+    assert [t["id"] for t in prev["accounts"]["acct-1"]] == ["at-prev-start"]
+
+    # cross-check: the collector's bucketing keeps/drops the same timestamps
+    items = [{"actorId": t["id"], "startedAt": t["postedAt"], "usageTotalUsd": 1.0}
+             for t in boundary_txns]
+    bucketed = scc.bucket_apify(items, ts(START), ts(END))
+    assert [x["name"] for x in bucketed["top"]] == ["at-start"]
+    assert bucketed["cost"] == 1.0       # at-start only
+    assert bucketed["prev_cost"] == 1.0  # at-prev-start only
+
+
+# -- mercury_pull: atomic output writes (#19) ---------------------------------
+
+def test_mercury_write_failure_leaves_prior_outputs_untouched(tmp_path, monkeypatch, capsys):
+    """A failure on the SECOND write must not leave a mixed set: prior files
+    stand byte-for-byte, and no .tmp leftovers remain."""
+    out = tmp_path / "out"
+    out.mkdir(parents=True)
+    names = ("accounts.json", "transactions-window.json", "transactions-prev.json")
+    stale = {"stale": True}
+    for name in names:
+        (out / name).write_text(json.dumps(stale))
+
+    real_dump = json.dump
+    calls = {"n": 0}
+
+    def failing_dump(obj, fh, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        return real_dump(obj, fh, **kwargs)
+
+    monkeypatch.setattr(mercury_pull.json, "dump", failing_dump)
+    code = run_mercury(tmp_path, {"MERCURY_API_TOKEN": "mc-test-token"},
+                       make_http_get(mercury_responses))
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "could not write outputs" in err
+    assert err.count("\n") == 1
+    assert sorted(p.name for p in out.iterdir()) == sorted(names)  # no .tmp files
+    for name in names:
+        assert json.loads((out / name).read_text()) == stale
 
 
 def test_mercury_missing_start_end_exits_64(tmp_path, capsys):

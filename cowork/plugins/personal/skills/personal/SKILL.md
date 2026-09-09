@@ -39,9 +39,11 @@ two transports means two answers to reconcile and no way to tell which is right.
 | `describe_finance_source(source)` | live schema for one source — never guess columns |
 | `run_finance_query(sql, max_rows?, dry_run?)` | one capped read-only SELECT/WITH |
 
-The door also exposes **write tools, granted per intent** — a session only
-sees the ones its token's grant carries, and a missing write tool means "not
-from here", never a gap to work around:
+The door also exposes **write tools, granted per intent**. Every session sees
+the FULL write catalog regardless of its grant — the door declares all tools
+to every client; grants are enforced per call, not in the tool list. A
+`{status: "forbidden"}` response to an ungranted call is the design working,
+never a gap to work around:
 
 | Tool | Use it for |
 |---|---|
@@ -54,8 +56,10 @@ from here", never a gap to work around:
 | `add_classification_rule(...)` / `add_vendor_rule(...)` | regex rules for merchants not yet seen |
 
 Every write is an append — latest row wins; undo is a restoring append, never
-a delete. Classification writes work only inside the human window
-(06:45–23:00 ET); outside it the door refuses, by design.
+a delete. Classification writes from the scheduled routine's machine-token
+session are refused outside its grant window (default 06:45–23:00 ET); a
+Google-OAuth (human) session is never window-gated — per
+docs/personal-door-spec.md §12.
 
 Reach for `saved_query` before novel SQL: a saved query already encodes the sign
 conventions and exclusions for its question. The morning spend report is
@@ -100,8 +104,10 @@ because a doc is stale, the fix is editing the doc — not patching the skill.
   (reversibility first, narrowest write-scope), and every door write follows
   the write protocol in the spend-checkin skill's `references/interactive.md`:
   Steven's explicit ask → echo the resolved parameters → call → show the
-  landing proof. Autonomous sessions never classify — the human window
-  (06:45–23:00 ET) enforces that door-side.
+  landing proof. Autonomous sessions never classify — the scheduled routine's
+  machine-token grant window (default 06:45–23:00 ET) enforces that
+  door-side. A Google-OAuth (human) session is never window-gated — per
+  docs/personal-door-spec.md §12.
 - `deploy.sh` and edits to committed context files remain **Claude Code, in
   the repo, with Steven present**. From a cloud or Cowork session, curation is
   narrate-and-relay: state the exact proposed edit (file, section, line) and

@@ -53,7 +53,10 @@ Stages (run one at a time, read the output of each):
   candidate   deploy \$IMAGE with NO traffic, tagged 'candidate'. Carries the
               PERSONAL_DOOR_GRANTS dial (identity -> tools + ET window).
   probe       POST /mcp on the candidate. Expect 401 with no auth AND a
-              refusal for a bogus bearer. A 404 = wrong image.
+              refusal for a bogus bearer. A 404 = wrong image. Then verifies
+              the grants dial with the REAL machine tokens (read back from
+              Secret Manager): every token authenticates, and out-of-grant
+              calls are refused. Any mismatch fails the deploy.
   promote     shift 100% traffic to the candidate
 
 After promote: a redeploy expires live MCP sessions, and a connector's tool list
@@ -243,12 +246,20 @@ candidate)
   # window. Machine identities absent from this map are refused everything.
   # Override by exporting PERSONAL_DOOR_GRANTS before this stage; the default
   # is the canonical dial:
-  #   checkin-routine   check-in writes always; classification + its reads
-  #                     only inside 06:45-23:00 America/New_York
-  #   checkin-watchdog  may record a FAILED check-in and read the ledger;
-  #                     classification never
-  #   checkin-smoke     report reads only — safe for smokes and drills
-  default_grants='{"checkin-routine":{"write_tools":["record_checkin","record_checkin_failed","reclassify_transaction","set_vendor_override","set_flow_override","add_vendor_mapping","add_vendor_alias","add_classification_rule","add_vendor_rule"],"read_tools":["run_finance_query","saved_query","list_saved_queries","feed_health"],"window":"06:45-23:00"},"checkin-watchdog":{"write_tools":["record_checkin_failed"],"read_tools":["run_finance_query"],"window":"always"},"checkin-smoke":{"write_tools":[],"read_tools":["run_finance_query","saved_query","feed_health"],"window":"always"}}'
+  #   checkin-routine   check-in writes and granted reads always;
+  #                     classification writes only inside 06:45-23:00
+  #                     America/New_York
+  #   checkin-watchdog  may record a FAILED check-in; reads ONLY saved_query +
+  #                     list_saved_queries. Its existence check runs the
+  #                     latest-spend-checkin saved query (the newest success
+  #                     row) and compares that row's run_ts date in ET — it
+  #                     never needs free-form SELECT over the mirror.
+  #   checkin-smoke     saved-query reads + feed_health only — safe for
+  #                     smokes and drills; no free-form SQL, no writes
+  # run_finance_query (arbitrary read-only SELECT over the whole finance
+  # mirror) is granted to checkin-routine ONLY — least privilege for the
+  # watchdog and smoke is the enumerated saved-query surface, not SELECT *.
+  default_grants='{"checkin-routine":{"write_tools":["record_checkin","record_checkin_failed","reclassify_transaction","set_vendor_override","set_flow_override","add_vendor_mapping","add_vendor_alias","add_classification_rule","add_vendor_rule"],"read_tools":["run_finance_query","saved_query","list_saved_queries","feed_health"],"window":"06:45-23:00"},"checkin-watchdog":{"write_tools":["record_checkin_failed"],"read_tools":["saved_query","list_saved_queries"],"window":"always"},"checkin-smoke":{"write_tools":[],"read_tools":["saved_query","list_saved_queries","feed_health"],"window":"always"}}'
   GRANTS="${PERSONAL_DOOR_GRANTS:-$default_grants}"
 
   # --no-invoker-iam-check keeps the URL publicly reachable (claude.ai must
@@ -311,6 +322,127 @@ probe)
     *)  echo "UNEXPECTED — a bogus bearer was NOT refused. Do NOT promote." >&2
         exit 1 ;;
   esac
+
+  # Third probe: the grants dial itself, with the REAL machine tokens. The
+  # transport probes above cannot catch a candidate whose VALID-token auth is
+  # broken, or whose grants map was mis-parsed into over- or under-granting —
+  # both promote silently without this. The operator identity running this
+  # script created the token secrets in the `secrets` stage, so it reads them
+  # back the same way (the DOOR still never sees a raw token — only digests).
+  #
+  # Four assertions, all against the candidate URL:
+  #   a. every token AUTHENTICATES — a cheap granted read succeeds
+  #   b. checkin-watchdog calling a classification tool -> forbidden
+  #   c. checkin-smoke calling a classification tool    -> forbidden
+  #   d. checkin-watchdog calling run_finance_query     -> forbidden
+  #      (a governed read, deliberately NOT in its grant)
+  #
+  # If assertion (a) fails, first suspect token rotation AFTER the candidate
+  # deployed: the candidate resolved the digests secret at deploy time, so a
+  # later `secrets` re-run strands it. Re-run: candidate, then probe.
+  echo
+  echo "Verifying the grants dial against the candidate (real machine tokens)..."
+
+  read_token() { # read_token NAME -> raw token on stdout
+    gc secrets versions access latest \
+      --secret "PERSONAL_DOOR_MACHINE_TOKEN_${1}" --project "$PROJECT"
+  }
+
+  mcp_call() { # mcp_call TOKEN TOOL ARGS_JSON -> prints the tools/call response
+    local token="$1" tool="$2" args="$3" hdrs body sid
+    hdrs="$(mktemp)"
+    body=$(curl -s -D "$hdrs" -X POST "$url/mcp" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -H "Authorization: Bearer ${token}" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-door-probe","version":"0"}}}')
+    sid=$(awk 'tolower($1)=="mcp-session-id:" {print $2}' "$hdrs" | tr -d '\r')
+    rm -f "$hdrs"
+    if [ -z "$sid" ]; then
+      # No session means the token did not authenticate — surface the body so
+      # the failure explains itself instead of looking like a dead service.
+      printf 'NO_SESSION %s' "$body"
+      return 0
+    fi
+    curl -s -o /dev/null -X POST "$url/mcp" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -H "Authorization: Bearer ${token}" -H "Mcp-Session-Id: ${sid}" \
+      -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    curl -s -X POST "$url/mcp" \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -H "Authorization: Bearer ${token}" -H "Mcp-Session-Id: ${sid}" \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"${tool}\",\"arguments\":${args}}}"
+  }
+
+  # The door's refusals are IN-BAND tool results: {"status":"forbidden",...}.
+  # They appear unescaped in structuredContent and \"-escaped in the text
+  # content block, so the pattern tolerates both.
+  forbidden_pat='\\?"status\\?"[[:space:]]*:[[:space:]]*\\?"forbidden\\?"'
+  grants_fail=0
+  expect_ok() { # expect_ok LABEL RESPONSE — a granted read must succeed
+    local label="$1" resp="$2"
+    if printf %s "$resp" | grep -q '^NO_SESSION'; then
+      echo "FAILED  $label — token did NOT authenticate: $(printf %s "$resp" | head -c 300)" >&2
+      grants_fail=1
+    elif printf %s "$resp" | grep -Eq "$forbidden_pat"; then
+      echo "FAILED  $label — granted call was refused: $(printf %s "$resp" | head -c 300)" >&2
+      grants_fail=1
+    elif ! printf %s "$resp" | grep -q '"result"'; then
+      echo "FAILED  $label — no result: $(printf %s "$resp" | head -c 300)" >&2
+      grants_fail=1
+    else
+      echo "ok      $label"
+    fi
+  }
+  expect_forbidden() { # expect_forbidden LABEL RESPONSE — the dial must refuse
+    local label="$1" resp="$2"
+    if printf %s "$resp" | grep -Eq "$forbidden_pat"; then
+      echo "ok      $label"
+    else
+      echo "FAILED  $label — expected forbidden, got: $(printf %s "$resp" | head -c 300)" >&2
+      grants_fail=1
+    fi
+  }
+
+  tok_routine="$(read_token CHECKIN_ROUTINE)"
+  tok_watchdog="$(read_token CHECKIN_WATCHDOG)"
+  tok_smoke="$(read_token CHECKIN_SMOKE)"
+
+  # (a) every token authenticates: list_saved_queries is granted to all three
+  # identities and reads only the in-repo catalog — no warehouse bytes.
+  expect_ok "routine  auth + granted read (list_saved_queries)" \
+    "$(mcp_call "$tok_routine" list_saved_queries '{}')"
+  expect_ok "watchdog auth + granted read (list_saved_queries)" \
+    "$(mcp_call "$tok_watchdog" list_saved_queries '{}')"
+  expect_ok "smoke    auth + granted read (list_saved_queries)" \
+    "$(mcp_call "$tok_smoke" list_saved_queries '{}')"
+
+  # (b)+(c) classification must refuse for watchdog and smoke. The refusal
+  # happens in the service's authorize gate BEFORE any write runtime runs; the
+  # probe-marked arguments only exist so argument validation lets the call
+  # reach that gate. If one of these WRONGLY lands, the deploy fails and the
+  # stray gold.vendor_aliases row below is the cleanup target.
+  probe_args='{"alias_name":"deploy-door-grants-probe","canonical_vendor_name":"deploy-door-grants-probe","notes":"must never land — deploy probe"}'
+  expect_forbidden "watchdog classification refused (add_vendor_alias)" \
+    "$(mcp_call "$tok_watchdog" add_vendor_alias "$probe_args")"
+  expect_forbidden "smoke    classification refused (add_vendor_alias)" \
+    "$(mcp_call "$tok_smoke" add_vendor_alias "$probe_args")"
+
+  # (d) granted-but-out-of-scope: run_finance_query is a real governed read,
+  # deliberately absent from the watchdog's grant. dry_run keeps it free even
+  # in the failure case where it wrongly executes.
+  expect_forbidden "watchdog run_finance_query refused (not in grant)" \
+    "$(mcp_call "$tok_watchdog" run_finance_query '{"sql":"SELECT 1","dry_run":true}')"
+
+  unset -v tok_routine tok_watchdog tok_smoke
+
+  if [ "$grants_fail" -ne 0 ]; then
+    echo "GRANTS DIAL BROKEN on the candidate — do NOT promote." >&2
+    exit 1
+  fi
+  echo "HEALTHY — the grants dial verified against the candidate."
   ;;
 
 promote)
@@ -318,21 +450,22 @@ promote)
   gc run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
     --format='value(status.url)'
   echo "Promoted. If the toolset changed, remove and re-add the connector in claude.ai."
-  # Post-promote probes need REAL machine tokens, which this script deliberately
-  # cannot read (they live in Secret Manager for the callers only) — so these
-  # are operator steps, not automation:
+  # The probe stage already verified the grants dial mechanically (every token
+  # authenticates; watchdog/smoke classification and watchdog run_finance_query
+  # all refuse). What remains is operator work because it depends on the wall
+  # clock and on landing REAL writes:
   cat <<'EOF'
 
-Post-promote checks of the grants dial (operator, with real caller tokens):
+Post-promote checks of the window dial (operator, with real caller tokens):
   1. In-window (06:45-23:00 America/New_York): a checkin-routine-token call to
      a classification tool (e.g. add_vendor_alias) should land, and its audit
      row should carry window_state='human'.
   2. Out-of-window: the same call should be REFUSED with a message naming the
      06:45-23:00 America/New_York window. record_checkin_failed should still
      land (window_state='autonomous').
-  3. Smoke: the checkin-smoke token can run report reads (run_finance_query
-     over finance.checkin_reports) and nothing else — every write refuses.
-     Use ONLY checkin-smoke for smokes and drills; it cannot classify.
+  3. Smoke: use ONLY checkin-smoke for smokes and drills — its grant is
+     saved_query / list_saved_queries / feed_health and nothing else. No
+     free-form SQL, no writes, no classification.
 EOF
   ;;
 

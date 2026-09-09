@@ -11,6 +11,7 @@ Run:  .venv/bin/python -m pytest tests/test_door_write.py -q -p no:cacheprovider
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import sys
@@ -162,7 +163,9 @@ def test_transactional_job_bundles_dml_and_audit_atomically():
 
 
 def test_no_delete_or_bare_update_in_any_write_sql():
-    """DELETE exists nowhere; UPDATE only inside the two keyed MERGE upserts."""
+    """DELETE exists nowhere; UPDATE only inside the keyed MERGE upserts
+    (mapping, alias, and the two rule tables — the door's no-DELETE stand-in
+    for the bash twins' DELETE+INSERT replace semantics)."""
     jobs = {
         "reclassify": fw._reclassify_dml(),
         "vendor_override": fw._vendor_override_dml(),
@@ -176,7 +179,7 @@ def test_no_delete_or_bare_update_in_any_write_sql():
     }
     for name, sql in jobs.items():
         assert "DELETE" not in sql.upper(), name
-        if name in ("mapping", "alias"):
+        if name in ("mapping", "alias", "classification_rule", "vendor_rule"):
             assert "WHEN MATCHED THEN UPDATE" in sql, name
         else:
             assert "UPDATE" not in sql.upper(), name
@@ -261,6 +264,86 @@ def test_checkin_digit_run_refusal_never_lands_the_digits(monkeypatch):
     for _n, _t, v in audit["params"]:
         assert "4111111111111111" not in str(v)
     assert all("4111111111111111" not in d for d in out["detail"])
+
+
+def test_checkin_calendar_invalid_timestamp_refused_not_crashed(monkeypatch):
+    """checkin_validate.TS_RE accepts 2026-02-30; parse_ts then raises inside
+    validate(). The door wrapper must turn that into a structured refusal with
+    the standard audit row, never an unstructured tool crash."""
+    fx = fake(monkeypatch)
+    p = checkin_payload(window_start="2026-02-30T10:00:00Z",
+                        consumed_checkpoint="2026-02-30T10:00:00Z")
+    out = fw.record_checkin(p, actor=ACTOR)
+    assert out["status"] == "refused"
+    assert out["reason"] == "invalid-payload"
+    assert "\n" not in out["error"]  # sanitized one-line error
+    assert write_calls(fx) == []
+    (audit,) = audit_calls(fx)
+    assert "BEGIN TRANSACTION" not in audit["sql"]
+    assert pval(audit, "audit_result") == "refused:invalid-payload"
+
+
+def test_invalid_payload_echo_replaces_digit_run_with_placeholder(monkeypatch):
+    """The refusal's audit args must never echo a raw violating payload field
+    — replace-not-refuse, mirroring sanitize_fail_reason."""
+    fx = fake(monkeypatch)
+    out = fw.record_checkin(checkin_payload(window_start="4111111111111111"),
+                            actor=ACTOR)
+    assert out["status"] == "refused"
+    assert out["reason"] == "invalid-payload"
+    (audit,) = audit_calls(fx)
+    args = json.loads(pval(audit, "audit_args"))
+    assert args["window_start"] == "invalid:digit-run"
+    assert "4111111111111111" not in pval(audit, "audit_args")
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2026-09-07T10:00:00Z", "2026-09-07T10:00:00Z"),
+        (None, None),
+        (42, "invalid:int"),
+        ({"a": 1}, "invalid:dict"),
+        ("4111111111111111", "invalid:digit-run"),
+        ("two\nlines", "invalid:multiline"),
+        ("x" * 500, "x" * 300),
+    ],
+)
+def test_sanitize_echo_shapes_raw_payload_fields(raw, expected):
+    assert fw.sanitize_echo(raw) == expected
+
+
+def test_checkin_confirm_read_failure_is_ok_with_warning(monkeypatch):
+    """After the MERGE+audit transaction COMMITS, a transient confirmation-read
+    failure must not masquerade as row absence — that would invite a retry of
+    a durable write."""
+    calls = []
+
+    def flaky(sql, params, tool):
+        calls.append(sql)
+        if len(calls) == 1:
+            return [{"checkpoint": "2026-09-07T10:00:00Z"}]
+        if len(calls) == 2:
+            return WRITE_OK
+        raise RuntimeError("transient read failure")
+
+    monkeypatch.setattr(fw, "_execute", flaky)
+    out = fw.record_checkin(checkin_payload(), actor=ACTOR)
+    assert out["status"] == "ok"
+    assert out["warning"] == "confirmation_unavailable"
+    assert "row" not in out
+    assert "do not retry" in out["note"]
+
+
+def test_checkin_confirm_row_genuinely_absent_is_error(monkeypatch):
+    fake(monkeypatch, [
+        [{"checkpoint": "2026-09-07T10:00:00Z"}],
+        WRITE_OK,
+        [],  # the confirmation read SUCCEEDED and found nothing
+    ])
+    out = fw.record_checkin(checkin_payload(), actor=ACTOR)
+    assert out["status"] == "error"
+    assert "did not land" in out["error"]
 
 
 # ── record_checkin_failed ────────────────────────────────────────────────────
@@ -514,6 +597,44 @@ def test_vendor_rule_appends_with_regex_guard(monkeypatch):
     assert "REGEXP_CONTAINS(''" in write["sql"]
 
 
+def test_rule_reask_is_single_row_merge_upsert(monkeypatch):
+    """A re-asked rule_id must update the ONE row in place: the consuming
+    views rank by (priority, rule_id) with NO created_at dedup, so an append
+    would leave both rows enabled with the old rule winning ties."""
+    fx = fake(monkeypatch, [
+        WRITE_OK, [{"rule_id": "wawa", "priority": 20}], [],
+        WRITE_OK, [{"rule_id": "wawa", "priority": 10}], [],
+    ])
+    fw.add_classification_rule("wawa", 20, r"(?i)\bwawa\b", "Convenience",
+                               actor=ACTOR)
+    out = fw.add_classification_rule("wawa", 10, r"(?i)\bwawa\b", "Groceries",
+                                     actor=ACTOR)
+    assert out["status"] == "ok"
+    assert "upsert" in out["semantics"] and "in place" in out["semantics"]
+    writes = write_calls(fx)
+    assert len(writes) == 2
+    for w in writes:
+        assert "MERGE" in w["sql"] and "classification_rules" in w["sql"]
+        assert "ON t.rule_id = s.rule_id" in w["sql"]
+        assert "WHEN MATCHED THEN UPDATE" in w["sql"]
+        assert "DELETE" not in w["sql"].upper()
+        assert pval(w, "audit_result_ok") == "ok key=rule_id=wawa"
+
+    fx2 = fake(monkeypatch, [
+        WRITE_OK, [{"rule_id": "wawa", "vendor_name": "Wawa"}],
+        WRITE_OK, [{"rule_id": "wawa", "vendor_name": "Wawa Inc"}],
+    ])
+    fw.add_vendor_rule("wawa", 20, r"(?i)\bwawa\b", "Wawa", actor=ACTOR)
+    out = fw.add_vendor_rule("wawa", 10, r"(?i)\bwawa\b", "Wawa Inc", actor=ACTOR)
+    assert out["status"] == "ok"
+    assert "upsert" in out["semantics"] and "in place" in out["semantics"]
+    for w in write_calls(fx2):
+        assert "MERGE" in w["sql"] and "vendor_rules" in w["sql"]
+        assert "ON t.rule_id = s.rule_id" in w["sql"]
+        assert "WHEN MATCHED THEN UPDATE" in w["sql"]
+        assert "DELETE" not in w["sql"].upper()
+
+
 # ── audit invariants across all tools ────────────────────────────────────────
 
 
@@ -557,6 +678,68 @@ def test_audit_failure_does_not_mask_the_refusal(monkeypatch):
     assert "audit" in out
 
 
+def test_job_failed_branch_lands_standalone_audit(monkeypatch):
+    """set_vendor_override has no pre-write read, so the FIRST _execute call
+    is the transactional write: it failing rolls back data AND audit, and the
+    failed attempt must be recorded standalone (the second call)."""
+    calls = []
+
+    def flaky(sql, params, tool):
+        calls.append({"sql": sql, "params": list(params), "tool": tool})
+        if len(calls) == 1:
+            raise RuntimeError("backend exploded 1234567890123 mid-transaction")
+        return []
+
+    monkeypatch.setattr(fw, "_execute", flaky)
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "error"
+    assert out["reason"] == "job-failed"
+    assert "1234567890123" not in out["error"]  # digit run scrubbed
+    assert out["audit"] == "logged"
+    assert len(calls) == 2  # the failed write, then the standalone audit
+    audit = calls[1]
+    assert "door_audit_log" in audit["sql"]
+    assert "BEGIN TRANSACTION" not in audit["sql"]
+    assert pval(audit, "audit_result") == "refused:job-failed"
+
+
+def test_job_failed_audit_failure_is_annotated(monkeypatch):
+    def down(sql, params, tool):
+        raise RuntimeError("bq is down")
+
+    monkeypatch.setattr(fw, "_execute", down)
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "error"
+    assert out["reason"] == "job-failed"
+    assert out["audit"].startswith("audit-write-failed")
+
+
+def test_result_timeout_routes_to_job_failed(monkeypatch):
+    calls = []
+
+    def timing_out(sql, params, tool):
+        calls.append(sql)
+        if len(calls) == 1:
+            raise TimeoutError("job did not finish inside the result timeout")
+        return []
+
+    monkeypatch.setattr(fw, "_execute", timing_out)
+    out = fw.set_vendor_override(KEY, "Wawa", actor=ACTOR)
+    assert out["status"] == "error"
+    assert out["reason"] == "job-failed"
+
+
+def test_execute_wires_named_timeouts():
+    """The real touchpoint bounds both the submission RPC and the wait for the
+    result, so a stuck backend surfaces as job-failed instead of hanging the
+    tool while holding transaction locks."""
+    assert fw.JOB_SUBMIT_TIMEOUT == 60
+    assert fw.JOB_RESULT_TIMEOUT == 240
+    src = inspect.getsource(fw._execute)
+    assert "timeout=JOB_SUBMIT_TIMEOUT" in src
+    assert "timeout=JOB_RESULT_TIMEOUT" in src
+
+
 # ── the service gate ─────────────────────────────────────────────────────────
 
 
@@ -568,10 +751,10 @@ def _service() -> DoorService:
 
 
 def test_every_write_method_refuses_a_stranger(monkeypatch):
-    def boom(sql, params, tool):
-        raise AssertionError("a stranger's call must never reach BigQuery")
-
-    monkeypatch.setattr(fw, "_execute", boom)
+    """A stranger's call must never reach data DML. The ONLY BigQuery traffic
+    a write refusal may produce is the best-effort standalone refusal audit
+    (plain INSERT, no transaction)."""
+    fx = fake(monkeypatch)
     service = _service()
     stranger = Identity(subject="google|2", email="nope@else.com", email_verified=True)
     governed = [
@@ -587,6 +770,11 @@ def test_every_write_method_refuses_a_stranger(monkeypatch):
     ]
     for call in governed:
         assert call()["status"] == "forbidden"
+    assert len(fx.calls) == len(governed)  # one refusal audit per attempt
+    for c in fx.calls:
+        assert "door_audit_log" in c["sql"]
+        assert "BEGIN TRANSACTION" not in c["sql"]
+        assert pval(c, "audit_result").startswith("refused:")
 
 
 def test_service_stamps_oauth_actor_onto_the_audit_row(monkeypatch):

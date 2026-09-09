@@ -421,6 +421,27 @@ class DoorService:
     # governed write runtime (finance_write.py), stamping who is writing onto
     # every audit row.
 
+    def _refused_write(
+        self, identity: Identity, tool: str, refusal: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Land a best-effort audit row for a write-tool authorization refusal.
+
+        sql/door.sql promises EVERY write attempt lands one audit row, but an
+        authorization refusal returns before finance_write runs — so it lands
+        its row here (WRITE_TOOLS only; read refusals mutate nothing and are
+        not audited). audit_refusal swallows its own failures, and the refusal
+        response is returned unchanged either way.
+        """
+        from . import finance_write
+
+        code = (
+            "refused:out-of-window"
+            if "window" in refusal
+            else f"refused:{refusal.get('status', 'forbidden')}"
+        )
+        finance_write.audit_refusal(self._write_actor(identity), tool, code)
+        return refusal
+
     def _write_actor(self, identity: Identity):
         """The audit stamp for this request.
 
@@ -454,7 +475,7 @@ class DoorService:
     def record_checkin(self, identity: Identity, payload: dict) -> dict[str, Any]:
         refusal = self._authorize(identity, "record_checkin")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "record_checkin", refusal)
         from . import finance_write
 
         return finance_write.record_checkin(payload, actor=self._write_actor(identity))
@@ -462,7 +483,7 @@ class DoorService:
     def record_checkin_failed(self, identity: Identity, reason: str) -> dict[str, Any]:
         refusal = self._authorize(identity, "record_checkin_failed")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "record_checkin_failed", refusal)
         from . import finance_write
 
         return finance_write.record_checkin_failed(
@@ -474,7 +495,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "reclassify_transaction")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "reclassify_transaction", refusal)
         from . import finance_write
 
         return finance_write.reclassify_transaction(
@@ -486,7 +507,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "set_vendor_override")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "set_vendor_override", refusal)
         from . import finance_write
 
         return finance_write.set_vendor_override(
@@ -498,7 +519,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "set_flow_override")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "set_flow_override", refusal)
         from . import finance_write
 
         return finance_write.set_flow_override(
@@ -510,7 +531,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "add_vendor_mapping")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "add_vendor_mapping", refusal)
         from . import finance_write
 
         return finance_write.add_vendor_mapping(
@@ -526,7 +547,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "add_vendor_alias")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "add_vendor_alias", refusal)
         from . import finance_write
 
         return finance_write.add_vendor_alias(
@@ -544,7 +565,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "add_classification_rule")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "add_classification_rule", refusal)
         from . import finance_write
 
         return finance_write.add_classification_rule(
@@ -567,7 +588,7 @@ class DoorService:
     ) -> dict[str, Any]:
         refusal = self._authorize(identity, "add_vendor_rule")
         if refusal:
-            return refusal
+            return self._refused_write(identity, "add_vendor_rule", refusal)
         from . import finance_write
 
         return finance_write.add_vendor_rule(

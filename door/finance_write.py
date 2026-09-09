@@ -6,18 +6,25 @@ validation. The door holds the only finance credential (KD5), so this module is
 the ONLY write path from a conversation into the mirror.
 
 Write discipline, in order of importance:
-  * Append-only families (transaction/flow/category overrides, both rule
-    tables): INSERT only. Latest-wins is enforced DOWNSTREAM — the consuming
-    views rank by created_at DESC (sql/model.sql, sql/gold.sql) — so a
-    correction is a new row, never a mutation. DELETE exists nowhere here.
-  * Keyed lookup families (vendor_category_map, vendor_aliases): MERGE upsert,
-    ported from the batch mode of their scripts. A pure append would fan
-    duplicate alias_key rows through the un-deduped alias join in sql/gold.sql.
+  * Append-only families (transaction/flow/category overrides): INSERT only.
+    Latest-wins is enforced DOWNSTREAM — the consuming views rank by
+    created_at DESC (sql/model.sql, sql/gold.sql) — so a correction is a new
+    row, never a mutation. DELETE exists nowhere here.
+  * Keyed lookup families (vendor_category_map, vendor_aliases, and both rule
+    tables): MERGE upsert. The mapping/alias upserts are ported from the batch
+    mode of their scripts (a pure append would fan duplicate alias_key rows
+    through the un-deduped alias join in sql/gold.sql). The rule upserts key
+    on rule_id, matching the replace semantics of add-rule.sh /
+    add-vendor-rule.sh (DELETE+INSERT) without the DELETE — the consuming
+    views rank rules by (priority, rule_id) with NO created_at dedup, so a
+    re-asked rule_id must update its one row in place, never append a twin.
   * EVERY write attempt — accepted, no-op, refused — lands one row in
     finance.door_audit_log. Accepted writes bundle their data DML and audit
     INSERT into ONE BigQuery multi-statement transaction (single job), so they
     land or fail together. Validation refusals, which never reach DML, land a
-    standalone audit INSERT.
+    standalone audit INSERT; DoorService lands the same standalone INSERT
+    (best effort, via audit_refusal) for authorization refusals that never
+    reach this module.
   * The audit row carries enumerated statuses and row keys only — never
     read-back rows, amounts, memos, or free text. Digit runs >= 9 are scrubbed
     from args and results, EXCEPT inside 64-hex transaction keys, which are
@@ -144,6 +151,26 @@ def sanitize_fail_reason(reason: Any) -> tuple[str, str | None]:
     if len(text) > REASON_CAP:
         return REASON_CODES["overlong"], "overlong"
     return text, None
+
+
+def sanitize_echo(value: Any) -> Any:
+    """Shape-gate a RAW, unvalidated payload field before echoing it into
+    audit args: violating values are replaced with an enumerated placeholder
+    (or truncated to the field cap), never landed verbatim — the same
+    replace-not-refuse pattern as sanitize_fail_reason. scrub_audit_value
+    would catch digit runs anyway; this also keeps non-string, multiline, and
+    overlong junk out of the audit log."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return f"invalid:{type(value).__name__}"
+    if DIGIT_RUN.search(value):
+        return "invalid:digit-run"
+    if "\n" in value or "\r" in value:
+        return "invalid:multiline"
+    if len(value) > FIELD_CAP:
+        return value[:FIELD_CAP]
+    return value
 
 
 # ── pure: audit construction ─────────────────────────────────────────────────
@@ -340,24 +367,53 @@ def _alias_dml() -> str:
 
 
 def _classification_rule_dml() -> str:
-    # scripts/add-rule.sh, minus its DELETE: pure append with the script's
-    # fixed direction='expense' and enabled=TRUE.
+    # scripts/add-rule.sh replaces by rule_id (DELETE+INSERT); the door keeps
+    # those replace semantics without DELETE: a keyed MERGE upsert on rule_id,
+    # same pattern as _mapping_dml/_alias_dml, with the script's fixed
+    # direction='expense' and enabled=TRUE. A pure append would leave a
+    # re-asked rule_id as two enabled rows, and the consuming view ranks by
+    # (priority, rule_id) with no created_at dedup — the old rule would win
+    # ties instead of the correction.
     return (
-        f"INSERT INTO `{PROJECT}.{FINANCE}.classification_rules`\n"
+        f"MERGE `{PROJECT}.{FINANCE}.classification_rules` AS t\n"
+        "USING (SELECT @rule_id AS rule_id, @priority AS priority,\n"
+        "              @description_regex AS description_regex,\n"
+        "              @category AS category, @subcategory AS subcategory) AS s\n"
+        "ON t.rule_id = s.rule_id\n"
+        "WHEN MATCHED THEN UPDATE SET\n"
+        "  priority          = s.priority,\n"
+        "  description_regex = s.description_regex,\n"
+        "  category          = s.category,\n"
+        "  subcategory       = NULLIF(s.subcategory, ''),\n"
+        "  enabled           = TRUE\n"
+        "WHEN NOT MATCHED THEN INSERT\n"
         "  (rule_id, priority, description_regex, direction, category, subcategory,\n"
         "   enabled, created_at)\n"
-        "VALUES (@rule_id, @priority, @description_regex, 'expense', @category,\n"
-        "        NULLIF(@subcategory, ''), TRUE, CURRENT_TIMESTAMP())"
+        "  VALUES (s.rule_id, s.priority, s.description_regex, 'expense', s.category,\n"
+        "          NULLIF(s.subcategory, ''), TRUE, CURRENT_TIMESTAMP())"
     )
 
 
 def _vendor_rule_dml() -> str:
-    # scripts/add-vendor-rule.sh, minus its DELETE: pure append.
+    # scripts/add-vendor-rule.sh replaces by rule_id (DELETE+INSERT); same
+    # replace semantics here via a keyed MERGE upsert on rule_id, no DELETE
+    # (see _classification_rule_dml for why an append would misrank re-asks).
     return (
-        f"INSERT INTO `{PROJECT}.{GOLD}.vendor_rules`\n"
+        f"MERGE `{PROJECT}.{GOLD}.vendor_rules` AS t\n"
+        "USING (SELECT @rule_id AS rule_id, @priority AS priority,\n"
+        "              @description_regex AS description_regex,\n"
+        "              @vendor_name AS vendor_name, @notes AS notes) AS s\n"
+        "ON t.rule_id = s.rule_id\n"
+        "WHEN MATCHED THEN UPDATE SET\n"
+        "  priority          = s.priority,\n"
+        "  description_regex = s.description_regex,\n"
+        "  vendor_name       = s.vendor_name,\n"
+        "  notes             = NULLIF(s.notes, ''),\n"
+        "  enabled           = TRUE\n"
+        "WHEN NOT MATCHED THEN INSERT\n"
         "  (rule_id, priority, description_regex, vendor_name, notes, enabled, created_at)\n"
-        "VALUES (@rule_id, @priority, @description_regex, @vendor_name,\n"
-        "        NULLIF(@notes, ''), TRUE, CURRENT_TIMESTAMP())"
+        "  VALUES (s.rule_id, s.priority, s.description_regex, s.vendor_name,\n"
+        "          NULLIF(s.notes, ''), TRUE, CURRENT_TIMESTAMP())"
     )
 
 
@@ -370,6 +426,12 @@ _REGEX_GUARD = "SELECT IF(NOT REGEXP_CONTAINS('', @description_regex), TRUE, TRU
 
 
 # ── execution: the only BigQuery touchpoint ──────────────────────────────────
+
+# A stuck backend must surface as the existing job-failed refusal path rather
+# than hang the tool while a half-open transaction holds locks: bound both the
+# submission RPC and the wait for the job's result.
+JOB_SUBMIT_TIMEOUT = 60  # seconds for client.query() to submit the job
+JOB_RESULT_TIMEOUT = 240  # seconds for job.result() to finish
 
 
 def _execute(sql: str, params: list[tuple], tool: str) -> list[dict]:
@@ -392,12 +454,13 @@ def _execute(sql: str, params: list[tuple], tool: str) -> list[dict]:
             maximum_bytes_billed=finance_native.MAX_BYTES_BILLED,
             labels={"tool": re.sub(r"[^a-z0-9_-]", "-", tool.lower())[:60]},
         ),
+        timeout=JOB_SUBMIT_TIMEOUT,
     )
     return [
         finance_native._redact_row(
             {key: finance_native._json_value(value) for key, value in dict(row).items()}
         )
-        for row in job.result()
+        for row in job.result(timeout=JOB_RESULT_TIMEOUT)
     ]
 
 
@@ -426,6 +489,21 @@ def _refuse(
     if extra:
         out.update(extra)
     return out
+
+
+def audit_refusal(
+    actor: WriteActor, tool: str, code: str, args: dict | None = None
+) -> None:
+    """Best-effort standalone audit row for a write attempt refused BEFORE the
+    write runtime runs (DoorService authorization refusals: forbidden tool,
+    out-of-window, unknown machine identity). One plain INSERT reusing the
+    refusal audit construction and scrubbing; its own failure is swallowed so
+    it can never mask or reshape the refusal it records."""
+    try:
+        sql, params = build_audit_only(tool, actor, audit_args_json(args or {}), code)
+        _execute(sql, params, tool)
+    except Exception:
+        pass
 
 
 def _run_write(
@@ -509,16 +587,24 @@ def record_checkin(payload: dict, *, actor: WriteActor) -> dict:
     if not isinstance(payload, dict):
         return _refuse(tool, actor, {"payload_type": type(payload).__name__},
                        "invalid-payload", error="payload must be an object")
-    params, errors = checkin_validate.validate(payload)
+    echoed = {
+        field: sanitize_echo(payload.get(field))
+        for field in ("run_ts", "window_start", "window_end", "consumed_checkpoint")
+    }
+    try:
+        params, errors = checkin_validate.validate(payload)
+    except Exception as exc:
+        # checkin_validate.TS_RE accepts calendar-invalid timestamps
+        # (2026-02-30...); parse_ts then raises inside validate(). Refuse
+        # structurally — with the standard refusal audit row — rather than
+        # escaping as an unstructured tool crash. Guard HERE only: the shared
+        # validator is also the laptop writer's, so it stays unforked.
+        err_line = _scrub_text(" ".join(str(exc).split())[:REASON_CAP])
+        return _refuse(tool, actor, echoed, "invalid-payload",
+                       error=f"payload failed validation: {err_line}")
     if errors:
         detail = [_scrub_text(e) for e in errors]
-        args = {
-            "run_ts": payload.get("run_ts"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "consumed_checkpoint": payload.get("consumed_checkpoint"),
-            "error_count": len(errors),
-        }
+        args = {**echoed, "error_count": len(errors)}
         return _refuse(tool, actor, args, "invalid-payload",
                        error="payload failed validation", extra={"detail": detail})
 
@@ -565,6 +651,17 @@ def record_checkin(payload: dict, *, actor: WriteActor) -> dict:
         [("window_start", "TIMESTAMP", params["window_start"])],
         tool,
     )
+    if confirm is None:
+        # The MERGE+audit transaction COMMITTED; only the post-write
+        # confirmation read failed. Conflating that with row absence would
+        # invite a retry after durable success — report the committed result
+        # with a warning instead.
+        out["warning"] = "confirmation_unavailable"
+        out["note"] = (
+            "the write committed but the post-write confirmation read failed "
+            "transiently; the row is durable — do not retry"
+        )
+        return out
     if not confirm:
         return {"status": "error",
                 "error": "row did not land (post-write confirmation found nothing)"}
@@ -779,10 +876,12 @@ def add_vendor_mapping(
 
     # A typo'd category_id inserts a row that silently classifies nothing, so
     # validate against the live typology before writing anything (the port of
-    # add-vendor-category.sh's valid_ids gate).
+    # add-vendor-category.sh's valid_ids gate). No LIMIT, matching the bash
+    # twin, which reads ALL active category_ids — the categories table is
+    # small and the read is already bounded by the door's byte cap.
     ids = _read(
         f"SELECT category_id FROM `{PROJECT}.{GOLD}.categories`\n"
-        "WHERE active ORDER BY category_id LIMIT 1000",
+        "WHERE active ORDER BY category_id",
         [],
         tool,
     )
@@ -944,8 +1043,9 @@ def add_classification_rule(
             "wins on every match"
         )
     out["semantics"] = (
-        "append-only: rules are evaluated by ascending priority then rule_id; "
-        "an override beats a rule"
+        "keyed upsert on rule_id: a re-ask updates the one rule in place; "
+        "rules are evaluated by ascending priority then rule_id; an override "
+        "beats a rule"
     )
     out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out
@@ -993,8 +1093,9 @@ def add_vendor_rule(
         "rule_id", rule_id,
     )
     out["semantics"] = (
-        "append-only: vendor rules are evaluated by ascending priority after "
-        "aliases; an override beats both"
+        "keyed upsert on rule_id: a re-ask updates the one rule in place; "
+        "vendor rules are evaluated by ascending priority after aliases; an "
+        "override beats both"
     )
     out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out

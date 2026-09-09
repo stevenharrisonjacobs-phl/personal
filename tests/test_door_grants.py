@@ -117,7 +117,10 @@ def machine(name: str) -> Identity:
 
 def boom(monkeypatch):
     def _boom(sql, params, tool):
-        raise AssertionError("a refused call must never reach BigQuery")
+        raise AssertionError(
+            "a refused call must never reach data DML; only the best-effort "
+            "refusal audit may touch _execute (and it swallows this)"
+        )
 
     monkeypatch.setattr(fw, "_execute", _boom)
 
@@ -277,6 +280,54 @@ def test_window_is_correct_when_process_tz_is_utc():
         time.tzset()
 
 
+# ── refusal audit rows: EVERY write attempt lands one ────────────────────────
+
+
+def test_out_of_window_refusal_lands_audit_row(monkeypatch):
+    """An authorization refusal returns before finance_write runs, but
+    sql/door.sql promises EVERY write attempt lands one audit row."""
+    fx = fake(monkeypatch)
+    out = _service(at="06:10").reclassify_transaction(
+        machine("checkin-routine"), KEY, "Groceries"
+    )
+    assert out["status"] == "forbidden"  # refusal response shape unchanged
+    assert set(out) == {"status", "error", "identity", "window"}
+    (audit,) = fx.calls
+    assert "door_audit_log" in audit["sql"]
+    assert "BEGIN TRANSACTION" not in audit["sql"]
+    assert pval(audit, "audit_result") == "refused:out-of-window"
+    assert pval(audit, "audit_tool") == "reclassify_transaction"
+    assert pval(audit, "audit_identity") == "machine|checkin-routine"
+    assert pval(audit, "audit_window_state") == "autonomous"
+
+
+def test_forbidden_identity_write_refusal_lands_audit_row(monkeypatch):
+    fx = fake(monkeypatch)
+    service = _service(at="12:00")
+    out = service.record_checkin_failed(machine("not-in-grants"), "reason")
+    assert out["status"] == "forbidden"
+    (audit,) = fx.calls
+    assert pval(audit, "audit_result") == "refused:forbidden"
+    assert pval(audit, "audit_tool") == "record_checkin_failed"
+    assert pval(audit, "audit_identity") == "machine|not-in-grants"
+    # Read-tool refusals are NOT audited: reads mutate nothing.
+    out = service.list_finance_sources(machine("not-in-grants"))
+    assert out["status"] == "forbidden"
+    assert len(fx.calls) == 1
+
+
+def test_refusal_shape_survives_audit_backend_failure(monkeypatch):
+    """The best-effort audit swallowing its own failure must not reshape or
+    annotate the refusal."""
+    boom(monkeypatch)
+    out = _service(at="06:10").reclassify_transaction(
+        machine("checkin-routine"), KEY, "Groceries"
+    )
+    assert out["status"] == "forbidden"
+    assert "06:45-23:00" in out["error"]
+    assert "audit" not in out
+
+
 # ── read scope ───────────────────────────────────────────────────────────────
 
 
@@ -290,6 +341,23 @@ def test_routine_ungranted_read_is_refused():
     out = _service(at="12:00").list_finance_sources(machine("checkin-routine"))
     assert out["status"] == "forbidden"
     assert "list_finance_sources" in out["error"]
+
+
+def test_read_all_grant_admits_every_governed_read_tool():
+    grants = _parse_grants(
+        json.dumps({"reporter": {"read_tools": "all", "window": "always"}})
+    )
+    assert grants["reporter"].read_all is True
+    assert grants["reporter"].read_tools == frozenset()
+    service = DoorService(
+        policy=DoorPolicy(allowed_emails=frozenset({ENROLLED}), grants=grants),
+        now=clock("12:00"),
+    )
+    for tool in sorted(READ_TOOLS):
+        assert service._authorize(machine("reporter"), tool) is None, tool
+    # "all" is reads only: writes stay default-deny.
+    for tool in sorted(WRITE_TOOLS):
+        assert service._authorize(machine("reporter"), tool) is not None, tool
 
 
 # ── checkin-watchdog and checkin-smoke ───────────────────────────────────────

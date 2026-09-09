@@ -131,6 +131,9 @@ def record_checkin(payload: dict[str, Any]) -> dict[str, Any]:
       - The checkpoint is re-resolved immediately before the write; if another
         run landed in between, this refuses — recompose against the live
         checkpoint rather than retrying blindly.
+      - A success payload where any source is failed/null must carry an exact
+        'DEGRADED — <source> unavailable' line in report_md per such source,
+        or the payload is refused.
       - A duplicate fire for the same window is a no-op, not a second row.
     Returns the confirmed durable row. If generation FAILED, do not call this —
     call record_checkin_failed instead.
@@ -165,6 +168,9 @@ def reclassify_transaction(
     Returns the durable override row PLUS the finance.v_transactions_classified
     row proving classification_source='override'. gold.transactions
     materializes within the hour — do not re-query it to verify.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.reclassify_transaction(
         current_identity(), transaction_key, category, notes
@@ -182,6 +188,9 @@ def set_vendor_override(
     arriving under a variant descriptor, prefer add_vendor_alias (fixes every
     occurrence); for a recurring pattern, add_vendor_rule. Returns the durable
     row; gold.transactions materializes within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.set_vendor_override(
         current_identity(), transaction_key, vendor_name, notes
@@ -200,6 +209,9 @@ def set_flow_override(
     This is how rows leave gold.transaction_flow_review — never silently
     coerce an unresolved flow in analysis; land the override instead. Returns
     the durable row; gold.transactions materializes within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.set_flow_override(
         current_identity(), transaction_key, flow_type, notes
@@ -218,6 +230,9 @@ def add_vendor_mapping(
     is validated against the LIVE gold.categories typology — a refusal returns
     the valid ids. Returns the durable row; gold.transactions materializes
     within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.add_vendor_mapping(current_identity(), vendor_name, category_id, notes)
 
@@ -234,6 +249,9 @@ def add_vendor_alias(
     decision the canonical name already has — do NOT also add a
     vendor_category_map row for the variant. Returns the durable row;
     gold.transactions materializes within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.add_vendor_alias(
         current_identity(), alias_name, canonical_vendor_name, notes
@@ -250,14 +268,18 @@ def add_classification_rule(
 ) -> dict[str, Any]:
     """Add a regex rule assigning a category to matching EXPENSE transactions.
 
-    Appends to finance.classification_rules (direction fixed to 'expense',
-    like the repo's guarded writer). Rules are evaluated by ascending priority
-    then rule_id; an override beats any rule. Rules exist for merchants never
-    seen before — for a KNOWN merchant prefer add_vendor_mapping. The regex is
-    RE2 (BigQuery REGEXP_CONTAINS) and is validated before anything lands.
-    Returns the durable row plus up to three v_transactions_classified rows
-    proving classification_source='rule:<rule_id>' (empty if nothing matches
-    yet); gold.transactions materializes within the hour.
+    Upserts finance.classification_rules keyed on rule_id — a re-ask updates
+    the one rule in place (direction fixed to 'expense', like the repo's
+    guarded writer). Rules are evaluated by ascending priority then rule_id;
+    an override beats any rule. Rules exist for merchants never seen before —
+    for a KNOWN merchant prefer add_vendor_mapping. The regex is RE2 (BigQuery
+    REGEXP_CONTAINS) and is validated before anything lands. Returns the
+    durable row plus up to three v_transactions_classified rows proving
+    classification_source='rule:<rule_id>' (empty if nothing matches yet);
+    gold.transactions materializes within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.add_classification_rule(
         current_identity(), rule_id, priority, description_regex, category, subcategory
@@ -274,10 +296,14 @@ def add_vendor_rule(
 ) -> dict[str, Any]:
     """Add a regex rule mapping matching descriptions to a vendor.
 
-    Appends to gold.vendor_rules, evaluated by ascending priority AFTER exact
-    aliases; a per-transaction vendor override beats both. The regex is RE2
-    and validated before anything lands. Returns the durable row;
-    gold.transactions materializes within the hour.
+    Upserts gold.vendor_rules keyed on rule_id — a re-ask updates the one rule
+    in place. Rules are evaluated by ascending priority AFTER exact aliases; a
+    per-transaction vendor override beats both. The regex is RE2 and validated
+    before anything lands. Returns the durable row; gold.transactions
+    materializes within the hour.
+    Machine-authenticated callers are refused outside their grant's configured
+    window (default 06:45-23:00 America/New_York); OAuth (human) sessions are
+    never window-gated.
     """
     return service.add_vendor_rule(
         current_identity(), rule_id, priority, description_regex, vendor_name, notes

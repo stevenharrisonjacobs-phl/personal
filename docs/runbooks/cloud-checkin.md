@@ -14,7 +14,7 @@ rotation. Plan of record:
 | 3:00 | finance nightly (rebuild → validate → agent) — unchanged | laptop launchd | ambient gcloud |
 | ~6:00 | `spend-checkin-morning` routine: generate + land report | cloud | `checkin-routine` |
 | 6:30 | laptop fallback generator (burn-in only; unload at cutover) | laptop launchd | ambient gcloud |
-| ~7:05 | `spend-checkin-watchdog` routine: no success row → failed row | cloud | `checkin-watchdog` |
+| ~7:05 | `spend-checkin-watchdog` routine, three branches: read succeeds + today's success row → quiet exit; read succeeds + no row → failed row; the door read itself ERRORS → write nothing and end loudly (indeterminate ≠ absence) | cloud | `checkin-watchdog` |
 
 Timezone invariant: both routines' `next_run_at` must correspond to the times
 above in **America/New_York**. Verify at creation and after every DST
@@ -29,9 +29,9 @@ fails the probe.
 
 | Credential | Scope | Storage | Rotation / lifecycle | Owner |
 |---|---|---|---|---|
-| `PERSONAL_DOOR_TOKEN` (checkin-routine) | door grants: report tools always; classification 06:45–23:00 ET; enumerated reads | masked API credential for the door host (preferred) or env var (fallback — record here if taken) | first-party lifecycle below | Steven |
-| watchdog door token | door grants: `record_checkin_failed` + existence-check read only | claude.ai environment of the watchdog routine (masked preferred) | first-party lifecycle below | Steven |
-| smoke door token | door grants: report tools only | held locally by Steven; used for U7 smokes / U8 drills | first-party lifecycle below | Steven |
+| `PERSONAL_DOOR_TOKEN` (checkin-routine) | door grants: check-in writes + granted reads always (the ONLY identity granted `run_finance_query`); classification writes 06:45–23:00 ET | masked API credential for the door host (preferred) or env var (fallback — record here if taken) | first-party lifecycle below | Steven |
+| watchdog door token | door grants: `record_checkin_failed` + saved-query reads only (`saved_query` + `list_saved_queries` — the existence check runs `latest-spend-checkin`, newest success row, comparing its `run_ts` date in ET); no `run_finance_query` | claude.ai environment of the watchdog routine (masked preferred) | first-party lifecycle below | Steven |
+| smoke door token | door grants: reads only — `saved_query` + `list_saved_queries` + `feed_health`; no `run_finance_query`, no writes | held locally by Steven; used for U7 smokes / U8 drills | first-party lifecycle below | Steven |
 | `SNAPFIX_SA_B64` | snapfix-agents: `jobUser` + `resourceViewer` (job costs; NOTE: `resourceViewer` exposes full SQL text of all project jobs — accepted, wrapper-tool deferred) | plain env var (base64 JSON; decoded in-process, never on disk) | 90-day key rotation | Steven |
 | `MERCURY_API_TOKEN` | Mercury **read-only** (no IP allowlist needed) | masked API credential preferred | Mercury auto-deletes after 45 idle days (daily use keeps it alive); revoke+remint on suspicion | Steven |
 | `VANTAGE_API_TOKEN` | Vantage read | masked preferred; env fallback for the MCP handshake if masking fails (record) | annual review; revoke on suspicion | Steven |
@@ -105,9 +105,12 @@ tokens, three digests in door env, grants JSON per `door/.env.example`.
    may lag. Check the hourly scheduled query in BigQuery.
 4. **Failed row** — read the reason. Precedence: a failed row never masks a
    later success (consume reads the latest success; late success supersedes).
-5. **No row at all** — generator and watchdog both missed. Check
-   `RemoteTrigger list_runs` for both routines, then `get_run_log` on the last
-   run; platform caps and suspensions leave no row.
+5. **No row at all** — generator and watchdog both missed, OR the watchdog's
+   own door read ERRORED. On a read error the watchdog writes NOTHING and ends
+   loudly — indeterminate is not absence, and a failed row it cannot verify
+   would lie — so its run log carries the error. Check `RemoteTrigger
+   list_runs` for both routines, then `get_run_log` on the last run; platform
+   caps and suspensions also leave no row.
 
 ## Probe & re-verification cadence (monthly, and after any platform change)
 

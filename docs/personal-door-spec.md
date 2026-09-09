@@ -516,13 +516,27 @@ JSON object, identity name → grant:
 ```json
 {"checkin-routine": {
    "write_tools": ["record_checkin", "..."],
-   "read_tools":  ["run_finance_query", "..."],
-   "window":      "06:45-23:00"}}
+   "read_tools":  ["run_finance_query", "saved_query", "list_saved_queries", "feed_health"],
+   "window":      "06:45-23:00"},
+ "checkin-watchdog": {
+   "write_tools": ["record_checkin_failed"],
+   "read_tools":  ["saved_query", "list_saved_queries"],
+   "window":      "always"},
+ "checkin-smoke": {
+   "write_tools": [],
+   "read_tools":  ["saved_query", "list_saved_queries", "feed_health"],
+   "window":      "always"}}
 ```
 
 - `write_tools`: subset of the 9 governed write tools.
 - `read_tools`: `"all"` or a subset of the 6 governed read tools.
 - `window`: `"always"` or `"HH:MM-HH:MM"`.
+- Canonical dial bound: `run_finance_query` (free-form SELECT over the whole
+  mirror) is granted to `checkin-routine` ONLY. The watchdog's existence check
+  is the `latest-spend-checkin` saved query (newest success row; it compares
+  that row's `run_ts` date in ET), so its reads are the saved-query surface,
+  and `checkin-smoke` gets saved-query reads plus `feed_health` — nothing
+  free-form, nothing writable.
 
 Semantics, enforced in `door/service.py` (the `_authorize` gate — a property
 of the service layer, so no tool can ship unprotected):
