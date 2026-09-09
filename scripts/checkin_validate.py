@@ -16,6 +16,10 @@ Contract enforced here:
   * All four sources and all four headline keys must be present; each source
     carries status ok|failed; a failed source has total null; at least one
     source must be ok for a success row to exist at all.
+  * Degraded visibility (KD8): a success payload with any failed or
+    null-total source must carry the exact stamp text
+    "DEGRADED — <source> unavailable" in report_md for EACH such source —
+    a report silently missing a source is worse than a stamped one.
   * Content bounds apply to report_md AND the serialized sources/totals JSON
     (the door redacts by column name only, so nested free text ships
     verbatim unless it is stopped here).
@@ -90,6 +94,13 @@ def validate(p: dict) -> tuple[dict, list[str]]:
             errors.append(f"sources.{name}.status must be ok or failed")
         if s.get("status") == "failed" and s.get("total") is not None:
             errors.append(f"sources.{name} failed but carries a total")
+        if s.get("status") == "failed" or s.get("total") is None:
+            stamp = f"DEGRADED — {name} unavailable"
+            if stamp not in str(p["report_md"]):
+                errors.append(
+                    f'sources.{name} is failed/null but report_md lacks its '
+                    f'"{stamp}" stamp (degraded-visibility rule: a report '
+                    f"built without a source must say so near the top)")
     for headline in HEADLINES:
         if headline not in totals:
             errors.append(f"totals.{headline} missing")

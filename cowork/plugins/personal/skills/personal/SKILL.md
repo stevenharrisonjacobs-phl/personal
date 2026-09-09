@@ -39,6 +39,28 @@ two transports means two answers to reconcile and no way to tell which is right.
 | `describe_finance_source(source)` | live schema for one source — never guess columns |
 | `run_finance_query(sql, max_rows?, dry_run?)` | one capped read-only SELECT/WITH |
 
+The door also exposes **write tools, granted per intent**. Every session sees
+the FULL write catalog regardless of its grant — the door declares all tools
+to every client; grants are enforced per call, not in the tool list. A
+`{status: "forbidden"}` response to an ungranted call is the design working,
+never a gap to work around:
+
+| Tool | Use it for |
+|---|---|
+| `record_checkin(payload)` / `record_checkin_failed(reason)` | landing the daily check-in row — generation runs only |
+| `reclassify_transaction(transaction_key, category, notes?)` | correcting one transaction's category |
+| `set_vendor_override(transaction_key, vendor_name, notes?)` | fixing one mis-resolved vendor |
+| `set_flow_override(transaction_key, flow_type, notes?)` | fixing one flow_type, clearing it from flow review |
+| `add_vendor_mapping(vendor_name, category_id, notes?)` | mapping a known merchant to a canonical category |
+| `add_vendor_alias(alias_name, canonical_vendor_name, notes?)` | collapsing a descriptor variant onto its merchant |
+| `add_classification_rule(...)` / `add_vendor_rule(...)` | regex rules for merchants not yet seen |
+
+Every write is an append — latest row wins; undo is a restoring append, never
+a delete. Classification writes from the scheduled routine's machine-token
+session are refused outside its grant window (default 06:45–23:00 ET); a
+Google-OAuth (human) session is never window-gated — per
+docs/personal-door-spec.md §12.
+
 Reach for `saved_query` before novel SQL: a saved query already encodes the sign
 conventions and exclusions for its question. The morning spend report is
 `saved_query("latest-spend-checkin")` — the `/spend-checkin` skill wraps it.
@@ -71,11 +93,25 @@ because a doc is stale, the fix is editing the doc — not patching the skill.
 
 ## Write discipline
 
-- **The door is read-only.** It has no write tools, by design. From a Cowork
-  seat you can *diagnose* anything and *change* nothing.
-- Classification changes (rules, overrides, vendor aliases) and `deploy.sh` are
-  **Claude Code, in the repo, with Steven present**. From anywhere else, say what
-  should change and stop.
+- **The door's writes are granted per intent.** The door is no longer
+  read-only: it exposes exactly the write tools a session's grant carries
+  (check-in recording, classification corrections). No grant, no tool — and
+  the refusal of an ungranted or out-of-window write is the design working,
+  never something to retry or route around.
+- Classification changes (rules, overrides, vendor mappings/aliases) may go
+  through the door's write tools **with Steven present** — the cloud morning
+  session with Steven in it qualifies. The triage rubric still applies
+  (reversibility first, narrowest write-scope), and every door write follows
+  the write protocol in the spend-checkin skill's `references/interactive.md`:
+  Steven's explicit ask → echo the resolved parameters → call → show the
+  landing proof. Autonomous sessions never classify — the scheduled routine's
+  machine-token grant window (default 06:45–23:00 ET) enforces that
+  door-side. A Google-OAuth (human) session is never window-gated — per
+  docs/personal-door-spec.md §12.
+- `deploy.sh` and edits to committed context files remain **Claude Code, in
+  the repo, with Steven present**. From a cloud or Cowork session, curation is
+  narrate-and-relay: state the exact proposed edit (file, section, line) and
+  stop — never attempt git operations from there.
 - Tiller is upstream. Never write `tiller_raw.*` or the Google Sheet.
 - **Never commit row-level data** — merchants, amounts, account numbers, query
   results. `.context/` is gitignored; that is where output goes.

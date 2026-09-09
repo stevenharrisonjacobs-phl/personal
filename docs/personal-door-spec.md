@@ -462,3 +462,160 @@ Phase 1 is the whole risk. Phases 3–5 are mechanical once identity holds.
 4. **The missing Advisor-review branch** — reconstruct `cash-flow-review.md`
    from the iCloud archive as part of Phase 4, or leave `/finances` at two
    branches for now?
+
+---
+
+## 12. Write side (2026-09-08) — machine identities, grants, the schedule dial
+
+Addendum for units U9/U10. U9 gave the door its governed write runtime
+(`door/finance_write.py`) behind the same authorize-first service layer as the
+reads. This section records how non-interactive callers get in, what each may
+touch, and when — the door is the sole governed surface, and the dials are
+per-identity and server-side (settled decision KD5).
+
+### Composite token verifier — choice and extension point
+
+A static bearer token would die at the transport with 401 before any service
+code ran: FastMCP authenticates every request through the provider built by
+`build_auth()`. The extension point chosen is **`fastmcp.server.auth.MultiAuth`**
+(present in fastmcp 3.4.x, which `door/requirements.txt` pins): it composes an
+auth *server* (our `GoogleProvider`, which keeps ALL routes and OAuth metadata)
+with additional *token verifiers*, trying the server first and each verifier in
+order until one accepts. `build_auth()` now returns:
+
+- no digests configured → exactly the pre-U10 `GoogleProvider` (or the
+  loopback no-auth mode);
+- digests configured → `MultiAuth(server=GoogleProvider, verifiers=[MachineTokenVerifier])`.
+
+`MachineTokenVerifier` (built in `door/auth.py::_build_machine_verifier`)
+hashes the presented bearer with SHA-256 and compares against every configured
+digest with `secrets.compare_digest`, never breaking out of the loop early —
+constant-time by construction, and the door env holds **digests only**
+(`PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS`, JSON name → lowercase sha256 hex). On a
+match it synthesizes an `AccessToken` whose claims carry
+`personal_door_machine: <name>`; `current_identity()` maps that claim to an
+`Identity` with `machine=<name>`, `subject='machine|<name>'`, and **no email
+and no scopes**. One deliberate transport artifact: the machine token carries
+the built Google provider's **effective** required scopes, because FastMCP's
+`RequireAuthMiddleware` checks the composed provider's `required_scopes`
+against every verified token. Effective, not as-requested: `GoogleProvider`
+normalizes short scope names (`profile` →
+`https://www.googleapis.com/auth/userinfo.profile`), and the middleware
+compares against the normalized list — hardcoding the request-form scopes
+would 403 every machine call (found by a live-package smoke; the offline
+suite cannot see it). Those scopes are stripped before the identity reaches
+the service layer and play no part in authorization.
+
+Three identities exist: `checkin-routine`, `checkin-watchdog`,
+`checkin-smoke`.
+
+### Grants schema (PERSONAL_DOOR_GRANTS)
+
+JSON object, identity name → grant:
+
+```json
+{"checkin-routine": {
+   "write_tools": ["record_checkin", "..."],
+   "read_tools":  ["run_finance_query", "saved_query", "list_saved_queries", "feed_health"],
+   "window":      "06:45-23:00"},
+ "checkin-watchdog": {
+   "write_tools": ["record_checkin_failed"],
+   "read_tools":  ["saved_query", "list_saved_queries"],
+   "window":      "always"},
+ "checkin-smoke": {
+   "write_tools": [],
+   "read_tools":  ["saved_query", "list_saved_queries", "feed_health"],
+   "window":      "always"}}
+```
+
+- `write_tools`: subset of the 9 governed write tools.
+- `read_tools`: `"all"` or a subset of the 6 governed read tools.
+- `window`: `"always"` or `"HH:MM-HH:MM"`.
+- Canonical dial bound: `run_finance_query` (free-form SELECT over the whole
+  mirror) is granted to `checkin-routine` ONLY. The watchdog's existence check
+  is the `latest-spend-checkin` saved query (newest success row; it compares
+  that row's `run_ts` date in ET), so its reads are the saved-query surface,
+  and `checkin-smoke` gets saved-query reads plus `feed_health` — nothing
+  free-form, nothing writable.
+
+Semantics, enforced in `door/service.py` (the `_authorize` gate — a property
+of the service layer, so no tool can ship unprotected):
+
+- **OAuth identities keep today's behavior.** The enrolled email gets the full
+  read catalog and every write tool, at every hour. The grants map does not
+  apply to humans.
+- **Machine identities are default-deny.** Absent from the map → every
+  governed call refuses. Configured digests with a missing/malformed grants
+  map (bad JSON, unknown tool name, bad window, unknown key) → the door
+  **refuses to start**, matching the `DoorPolicy.from_env` fail-closed
+  precedent.
+- A typo'd tool name is a startup error, not a silent lifetime denial: grant
+  entries are validated against the real catalog.
+
+### Window semantics
+
+- Evaluated **per call** in `America/New_York` via `zoneinfo` (`tzdata` is
+  pinned in `door/requirements.txt` — `python:3.12-slim` ships no system
+  zoneinfo), from a timezone-aware UTC clock, so the container's TZ setting is
+  irrelevant.
+- **Inclusive at both ends**: with `06:45-23:00`, 06:44 refuses, 06:45 and
+  23:00 allow, 23:01 refuses. Wrap-around windows are not supported (startup
+  error).
+- The window gates **classification writes only** (`reclassify_transaction`,
+  `set_vendor_override`, `set_flow_override`, `add_vendor_mapping`,
+  `add_vendor_alias`, `add_classification_rule`, `add_vendor_rule`). Check-in
+  writes (`record_checkin`, `record_checkin_failed`) and granted reads are
+  never window-gated — the routine's own ledger must land at 06:10.
+- A window refusal names the window and the current ET time in its error, so
+  the refused caller's log explains itself.
+
+### Audit columns
+
+Every write's audit row (U9's `finance.door_audit_log` + inline audit columns)
+carries the actor from `DoorService._write_actor`:
+
+- `identity`: the verified email (human) or `machine|<name>` (machine).
+- `client_id`: the OAuth client, or `machine|<name>`.
+- `window_state`: `human` for OAuth sessions; for machines, `human` only when
+  the identity has a **bounded** window and the call is inside it, else
+  `autonomous`. So the routine's 06:10 `record_checkin` lands as
+  `autonomous`, its 06:45+ classification as `human`; a watchdog with an
+  `always` window is always `autonomous` — it makes no human-hours claim.
+
+### Token lifecycle
+
+Minted by `scripts/deploy-door.sh secrets`: 32 random bytes per identity
+(`openssl rand -hex 32`), raw token stored only in the per-caller secret
+`PERSONAL_DOOR_MACHINE_TOKEN_<NAME>`, digest folded into the single
+`PERSONAL_DOOR_MACHINE_TOKEN_DIGESTS` secret the door mounts. The runtime SA
+can read the digests, never the raw tokens; each caller's SA gets accessor on
+its own token secret only.
+
+The `secrets` stage is **create-if-absent**: re-running it changes nothing that
+already exists. Rotation is its own stage (`rotate-tokens`), because the stage
+also holds `JWT_SIGNING_KEY` and `STORAGE_ENCRYPTION_KEY` — regenerating those
+invalidates every issued JWT and makes every Firestore record encrypted under
+the old Fernet key permanently unreadable. There is deliberately no rotation
+stage for those two: rotating the Fernet key without a re-encrypt migration is
+data loss, not rotation.
+
+The candidate stage **pins every secret to an explicit version** rather than
+`:latest`, because Cloud Run resolves secret env vars when an *instance*
+starts, not once per deploy — under `:latest`, a rotation leaves warm instances
+on the old digests while cold ones take the new ones, and the same caller token
+is then accepted or 401'd depending on which instance answers. Pinning makes
+rotation a deploy: `rotate-tokens` → `build` → `candidate` → `probe` →
+`promote`, with a bounded 401 window between the mint and the promote (callers
+read `:latest` and pick up new tokens immediately). The candidate stage also
+carries the grants JSON (canonical value inline in the script, overridable via
+`PERSONAL_DOOR_GRANTS`); the probe stage requires the unauthenticated 401, a
+bogus-bearer refusal, and the real-token grants matrix before promote.
+
+### The honest bound
+
+The dial's injection guarantee covers **on-schedule runs**: a routine calling
+at its appointed hour gets exactly its granted tools and nothing else, and its
+audit rows say whether a human plausibly saw the window. It does not cover
+out-of-band exercises — smokes and drills must use the report-only
+`checkin-smoke` identity, which cannot write at all, rather than replaying the
+routine's token at odd hours and calling the refusals a test result.

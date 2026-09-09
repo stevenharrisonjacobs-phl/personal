@@ -4,3 +4,4 @@ google-cloud-firestore>=2.16
 py-key-value-aio[firestore]>=0.4.5
 cryptography>=42
 httpx>=0.27
+tzdata>=2025.2  # python:3.12-slim has no system zoneinfo; the grants window is America/New_York

@@ -30,7 +30,8 @@ def payload(**overrides):
         },
         "totals": {"personal_cash": 284.12, "mercury_cash": None,
                    "cloud_billed": 11.42, "cloud_live": 8.71},
-        "report_md": "## Check-in\nCard ****1234 ok. Total $284.12",
+        "report_md": "## Check-in\nDEGRADED — mercury unavailable\n"
+                     "Card ****1234 ok. Total $284.12",
     }
     p.update(copy.deepcopy(overrides))
     return p
@@ -127,6 +128,42 @@ def test_digit_run_in_source_note_refused():
 
 def test_masked_digits_pass():
     assert errors_of(payload()) == []  # ****1234 in the fixture report
+
+
+# -- DEGRADED stamp enforcement (KD8) -----------------------------------------
+
+def test_failed_source_with_degraded_stamp_accepted():
+    # The default fixture: mercury failed AND report_md carries its stamp.
+    assert errors_of(payload()) == []
+
+
+def test_failed_source_without_degraded_stamp_refused():
+    p = payload(report_md="## Check-in\nCard ****1234 ok. Total $284.12")
+    assert any("DEGRADED — mercury unavailable" in e and "degraded-visibility" in e
+               for e in errors_of(p))
+
+
+def test_degraded_stamp_must_name_each_failed_source():
+    p = payload()  # stamp names mercury only
+    p["sources"]["vantage"] = {"status": "failed", "total": None, "note": "auth"}
+    p["totals"]["cloud_billed"] = None
+    errs = errors_of(p)
+    assert any("DEGRADED — vantage unavailable" in e for e in errs)
+    assert not any("DEGRADED — mercury unavailable" in e for e in errs)
+
+
+def test_ok_source_with_null_total_needs_stamp():
+    # KD8: the stamp keys off a null total, not only status='failed'.
+    p = payload(report_md="## Check-in\nCard ****1234 ok. Total $284.12")
+    p["sources"]["mercury"] = {"status": "ok", "total": None}
+    assert any("DEGRADED — mercury unavailable" in e for e in errors_of(p))
+
+
+def test_all_ok_payload_needs_no_stamp():
+    p = payload(report_md="## Check-in\nCard ****1234 ok. Total $284.12")
+    p["sources"]["mercury"] = {"status": "ok", "total": 42.0}
+    p["totals"]["mercury_cash"] = 42.0
+    assert errors_of(p) == []
 
 
 # -- totals reconciliation -----------------------------------------------------

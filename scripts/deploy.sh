@@ -118,6 +118,7 @@ render_sql "$ROOT_DIR/sql/epics.sql" > "$temp_dir/epics.sql"
 render_sql "$ROOT_DIR/sql/gold.sql" > "$temp_dir/gold.sql"
 render_sql "$ROOT_DIR/sql/reviewer.sql" > "$temp_dir/reviewer.sql"
 render_sql "$ROOT_DIR/sql/checkin.sql" > "$temp_dir/checkin.sql"
+render_sql "$ROOT_DIR/sql/door.sql" > "$temp_dir/door.sql"
 
 bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/refresh.sql"
@@ -133,6 +134,8 @@ bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/reviewer.sql"
 bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
   --use_legacy_sql=false < "$temp_dir/checkin.sql"
+bq --project_id="$GCP_PROJECT_ID" --location="$BQ_LOCATION" query \
+  --use_legacy_sql=false < "$temp_dir/door.sql"
 
 schedule_params="$(jq -n \
   --rawfile query "$temp_dir/refresh.sql" \
