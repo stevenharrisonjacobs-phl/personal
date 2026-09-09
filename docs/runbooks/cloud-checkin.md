@@ -110,7 +110,17 @@ records unreadable. That needs a re-encrypt migration, not a rotation.
 
 ### 4. Cloud environment (claude.ai/code → Environments)
 
-- Repo: `stevenharrisonjacobs-phl/personal`; setup script: `scripts/cloud-setup.sh`.
+- Repo: attached per session/routine — the environment dialog has no repo field.
+- Setup script: paste the CONTENTS of `scripts/cloud-setup.sh` into the box. It
+  is not a path, and the script must be self-contained: setup runs before Claude
+  Code launches, with no guarantee the repo is checked out or that CWD is the
+  repo root. A delegating wrapper (`[ -f scripts/cloud-setup.sh ] && bash ...`)
+  fails silently and provisions nothing — observed 2026-09-09.
+- Network access: **Custom**, the five source hosts, AND "Also include default
+  list of common package managers" ticked — without it pypi.org is unreachable
+  and no dependency ever installs.
+- Cache: the snapshot re-builds when the setup script text or the allowed hosts
+  change, else after ~7 days. Editing env vars alone does NOT re-run setup.
 - Network: **Trusted** (add custom hosts only for sources whose masked route fails).
 - Env vars: `SNAPFIX_SA_B64`, `LANGSMITH_API_KEY` (if not masked), per-source
   `*_AUTH=proxy` signals for every masked source.
