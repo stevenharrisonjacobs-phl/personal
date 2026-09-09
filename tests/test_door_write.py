@@ -82,7 +82,7 @@ def checkin_payload(**overrides):
         },
         "totals": {"personal_cash": 284.12, "mercury_cash": None,
                    "cloud_billed": 11.42, "cloud_live": 8.71},
-        "report_md": "## Check-in\nCard ****1234 ok. Total $284.12",
+        "report_md": "## Check-in\nDEGRADED \u2014 mercury unavailable\nCard ****1234 ok. Total $284.12",
     }
     p.update(copy.deepcopy(overrides))
     return p

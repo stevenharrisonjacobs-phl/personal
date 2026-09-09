@@ -8,7 +8,7 @@
     {
       "name": "personal",
       "source": "./cowork/plugins/personal",
-      "description": "Steven's personal skills, backed by a Google-authenticated read-only door onto the Tiller finance mirror."
+      "description": "Steven's personal skills, backed by a Google-authenticated door onto the Tiller finance mirror (governed reads, granted per-intent writes)."
     }
   ]
 }
