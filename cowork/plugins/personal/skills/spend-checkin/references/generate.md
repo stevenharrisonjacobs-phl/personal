@@ -85,10 +85,29 @@ state (overdue / upcoming). Overdue first.
   <window_end>` → JSON with `cost`, `prev_cost` (same window seven days
   earlier), and top drivers for BigQuery scanning, LangSmith-tracked runs, and
   Apify. Its `errors[]` entries go verbatim into Notes.
-- Billed pull: Vantage MCP `query-costs` (workspace `wrkspc_11e5a634c05d1ca2`)
-  grouped by provider for the window AND the prior-week window. Vantage
-  ingestion lags ~1 day — label billed figures with the lag; an empty billed
-  window is a lag note, not a $0 claim.
+- Billed pull: Vantage MCP `query-costs`, for the window AND the prior-week
+  window. Vantage ingestion lags ~1 day — label billed figures with the lag; an
+  empty billed window is a lag note, not a $0 claim.
+
+  Call it with EXACTLY this argument shape — verified live 2026-09-09. Three of
+  these are easy to get wrong and each costs a failed call:
+
+  ```json
+  {"workspace_token": "wrkspc_11e5a634c05d1ca2",
+   "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
+   "groupings": ["provider"],
+   "filter": "costs.provider IN ('anthropic','gcp','open_ai')"}
+  ```
+
+  - `groupings` is an ARRAY. A bare string fails validation.
+  - `filter` is REQUIRED and must be non-empty — omitting it fails validation,
+    and `""` is rejected with `filter is empty`. It is VQL, not SQL.
+  - The provider keys are `anthropic`, `gcp`, `open_ai` (underscore, not
+    `openai`) — from `list-cost-providers`; these three are the whole account.
+
+  Results come back one row per (day, provider) as `accrued_at` / `amount` /
+  `provider`, so sum per provider across the window rather than expecting a
+  total.
 - The four lines (each with a trend marker vs `prev_cost` — ↑/↓ with %, or
   "≈ flat" under 15%; "no comparison available" when the baseline is missing
   or zero on a first run — never invent a delta):

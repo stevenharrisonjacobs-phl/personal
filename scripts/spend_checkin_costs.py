@@ -66,9 +66,19 @@ BQ_SQL = """WITH jobs AS (
 
 # Project names drift (Snapfix-Agents has already been renamed once); a
 # missing project is a note, never a dead pull.
-LANGSMITH_PROJECTS = ("Snapfix", "Snapfix-Agents")
+# Production snapfix LangSmith projects, DISCOVERED at pull time rather than
+# hardcoded. The previous fixed tuple read ("Snapfix", "Snapfix-Agents") — and
+# "Snapfix-Agents" matches nothing, because LangSmith project lookup is
+# case-sensitive and the real project is "snapfix-agents". That typo hid eight
+# projects' LLM spend behind a note nobody reads. A hardcoded list also stops
+# covering anything added later, so discovery is the fix, not a corrected list.
+LANGSMITH_PROJECT_PREFIX = "snapfix"
+# Dev/test projects are real money but not PRODUCTION spend, which is the
+# question this report answers.
+LANGSMITH_EXCLUDE_MARKERS = ("-dev",)
 
 APIFY_URL = "https://api.apify.com/v2/actor-runs?desc=1&limit=500"
+APIFY_ACTS_URL = "https://api.apify.com/v2/acts"
 
 
 class UsageError(Exception):
@@ -156,11 +166,33 @@ def pull_bigquery(start, end, env, run_query=None):
 
 # ---- LangSmith run costs, both windows in one pull --------------------------
 
+def production_projects(client):
+    """Every snapfix* project except dev ones, from the live project list.
+
+    Case-insensitive on purpose: the projects are spelled inconsistently
+    ("Snapfix" beside "snapfix-agents") and matching the spelling by hand is
+    what broke before.
+    """
+    names = [getattr(p, "name", None) or "" for p in client.list_projects()]
+    return sorted(
+        n for n in names
+        if n.lower().startswith(LANGSMITH_PROJECT_PREFIX)
+        and not any(m in n.lower() for m in LANGSMITH_EXCLUDE_MARKERS)
+    )
+
+
 def langsmith_costs(client, start, end):
     prev_start, prev_end = prev_window(start, end)
     cur_total, prev_total = Decimal("0"), Decimal("0")
     top, notes = [], []
-    for project in LANGSMITH_PROJECTS:
+    try:
+        projects = production_projects(client)
+    except Exception as exc:  # noqa: BLE001 — degrade with a note, never die
+        return {"cost": 0.0, "prev_cost": 0.0, "top": [],
+                "notes": [f"project discovery failed: {type(exc).__name__}"]}
+    if not projects:
+        notes.append(f"no {LANGSMITH_PROJECT_PREFIX}* production projects found")
+    for project in projects:
         try:
             runs = list(client.list_runs(project_name=project,
                                          start_time=prev_start,
@@ -204,7 +236,25 @@ def pull_langsmith(start, end, env, client_factory=None):
 
 # ---- Apify actor runs, both windows from one page ---------------------------
 
-def bucket_apify(items, start, end):
+def actor_names(act_ids, http_get, headers):
+    """Resolve actor ids to readable names, best effort.
+
+    A run object carries no name, only an opaque id, and "WI0tj4Ieb5Kq458gB
+    $0.72" tells a morning reader nothing. One extra GET per DISTINCT actor in
+    the top-3 — never per run. Any failure leaves that actor as its id rather
+    than failing the pull.
+    """
+    names = {}
+    for act_id in act_ids:
+        try:
+            data = http_get(f"{APIFY_ACTS_URL}/{act_id}", headers) or {}
+            names[act_id] = (data.get("data") or {}).get("name") or act_id
+        except Exception:  # noqa: BLE001 — a name is a nicety, never a failure
+            names[act_id] = act_id
+    return names
+
+
+def bucket_apify(items, start, end, http_get=None, headers=None):
     prev_start, prev_end = prev_window(start, end)
     cur, prev = 0.0, 0.0
     actors = defaultdict(float)
@@ -216,11 +266,17 @@ def bucket_apify(items, start, end):
         cost = r.get("usageTotalUsd") or 0
         if start <= t < end:
             cur += cost
-            actors[r.get("actorId") or "?"] += cost
+            # The API field is actId. It was read as actorId, which does not
+            # exist on the run object, so every actor bucketed under "?" and
+            # the top-drivers line named nothing. actorId stays as a fallback
+            # in case the field is ever spelled that way.
+            actors[r.get("actId") or r.get("actorId") or "?"] += cost
         elif prev_start <= t < prev_end:
             prev += cost
-    top = [{"name": a, "cost": round(c, 4)}
-           for a, c in sorted(actors.items(), key=lambda x: -x[1])[:3]]
+    ranked = sorted(actors.items(), key=lambda x: -x[1])[:3]
+    names = ({} if http_get is None
+             else actor_names([a for a, _ in ranked if a != "?"], http_get, headers or {}))
+    top = [{"name": names.get(a, a), "cost": round(c, 4)} for a, c in ranked]
     return {"cost": round(cur, 4), "prev_cost": round(prev, 4), "top": top}
 
 
@@ -235,7 +291,8 @@ def pull_apify(start, end, env, http_get=None):
     try:
         raw = http_get(APIFY_URL, headers)
         items = raw["data"]["items"]
-        return bucket_apify(items, parse_iso(start), parse_iso(end)), []
+        return bucket_apify(items, parse_iso(start), parse_iso(end),
+                            http_get=http_get, headers=headers), []
     except Exception as exc:  # noqa: BLE001 — degrade, never die
         return None, [f"apify pull failed: {type(exc).__name__}: {exc}"]
 
