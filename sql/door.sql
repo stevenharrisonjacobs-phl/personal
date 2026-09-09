@@ -17,12 +17,12 @@
 --   * Append-only: nothing updates or deletes audit rows.
 CREATE TABLE IF NOT EXISTS `__PROJECT_ID__.__FINANCE_DATASET__.door_audit_log` (
   ts TIMESTAMP NOT NULL,
-  -- Who wrote: the verified OAuth email today; machine identities arrive with
-  -- the per-identity dials (U10).
+  -- Who wrote: the verified OAuth email, or machine|<name> for a machine
+  -- identity.
   identity STRING,
   client_id STRING,
-  -- 'human' for an interactive OAuth session; the scheduled-run window state
-  -- arrives with the schedule dial (U10).
+  -- 'human' for an interactive OAuth session or a machine identity inside its
+  -- grant's ET window; 'autonomous' for a machine identity outside it.
   window_state STRING,
   tool STRING NOT NULL,
   -- Structured, scrubbed tool arguments: keys and enumerations only.

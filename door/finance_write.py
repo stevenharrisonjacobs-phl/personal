@@ -90,9 +90,9 @@ GOLD_MATERIALIZATION_NOTE = (
 class WriteActor:
     """Who is writing, stamped onto every audit row.
 
-    Populated by DoorService from the OAuth identity today (window_state
-    'human'). Unit U10 extends this with machine identities, grants, and the
-    schedule dial — this dataclass is the seam it fills in.
+    Populated by DoorService: an OAuth identity stamps window_state 'human';
+    a machine identity stamps 'human' while inside its grant's bounded
+    America/New_York window and 'autonomous' otherwise.
     """
 
     identity: str
@@ -469,6 +469,22 @@ def _read(sql: str, params: list[tuple], tool: str) -> list[dict] | None:
         return None
 
 
+def _latest_row(
+    tool: str, table: str, columns: str, key_col: str, key_val: str
+) -> dict | None:
+    """Read back the row a write just landed: latest by created_at for the key.
+    None means the row is absent or the read-back itself failed."""
+    rows = _read(
+        f"SELECT {columns}\n"
+        f"FROM {table}\n"
+        f"WHERE {key_col} = @{key_col}\n"
+        "ORDER BY created_at DESC LIMIT 1",
+        [(key_col, "STRING", key_val)],
+        tool,
+    )
+    return rows[0] if rows else None
+
+
 def _now_utc() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -653,13 +669,10 @@ def reclassify_transaction(
     if out["status"] not in ("ok", "no-op"):
         return out
 
-    row = _read(
-        f"SELECT transaction_key, category, notes, created_at\n"
-        f"FROM `{PROJECT}.{FINANCE}.transaction_overrides`\n"
-        "WHERE transaction_key = @transaction_key\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("transaction_key", "STRING", transaction_key)],
-        tool,
+    row = _latest_row(
+        tool, f"`{PROJECT}.{FINANCE}.transaction_overrides`",
+        "transaction_key, category, notes, created_at",
+        "transaction_key", transaction_key,
     )
     proof = _read(
         "SELECT transaction_key, category, subcategory, classification_source\n"
@@ -668,7 +681,7 @@ def reclassify_transaction(
         [("transaction_key", "STRING", transaction_key)],
         tool,
     )
-    out["row"] = row[0] if row else None
+    out["row"] = row
     out["classification_proof"] = proof[0] if proof else None
     out["semantics"] = (
         "append-only: the latest override by created_at wins in "
@@ -701,15 +714,11 @@ def set_vendor_override(
                      f"transaction_key={transaction_key}")
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT transaction_key, vendor_name, notes, created_at\n"
-        f"FROM `{PROJECT}.{GOLD}.transaction_vendor_overrides`\n"
-        "WHERE transaction_key = @transaction_key\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("transaction_key", "STRING", transaction_key)],
-        tool,
+    out["row"] = _latest_row(
+        tool, f"`{PROJECT}.{GOLD}.transaction_vendor_overrides`",
+        "transaction_key, vendor_name, notes, created_at",
+        "transaction_key", transaction_key,
     )
-    out["row"] = row[0] if row else None
     out["semantics"] = "append-only: the latest override by created_at wins in gold"
     out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out
@@ -746,15 +755,11 @@ def set_flow_override(
                      f"transaction_key={transaction_key}")
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT transaction_key, flow_type, notes, created_at\n"
-        f"FROM `{PROJECT}.{GOLD}.transaction_flow_overrides`\n"
-        "WHERE transaction_key = @transaction_key\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("transaction_key", "STRING", transaction_key)],
-        tool,
+    out["row"] = _latest_row(
+        tool, f"`{PROJECT}.{GOLD}.transaction_flow_overrides`",
+        "transaction_key, flow_type, notes, created_at",
+        "transaction_key", transaction_key,
     )
-    out["row"] = row[0] if row else None
     out["semantics"] = "append-only: the latest override by created_at wins in gold"
     out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out
@@ -801,15 +806,11 @@ def add_vendor_mapping(
                      f"vendor_name={_scrub_text(vendor_name)}")
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT vendor_name, category_id, notes, enabled, created_at\n"
-        f"FROM `{PROJECT}.{GOLD}.vendor_category_map`\n"
-        "WHERE vendor_name = @vendor_name\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("vendor_name", "STRING", vendor_name)],
-        tool,
+    out["row"] = _latest_row(
+        tool, f"`{PROJECT}.{GOLD}.vendor_category_map`",
+        "vendor_name, category_id, notes, enabled, created_at",
+        "vendor_name", vendor_name,
     )
-    out["row"] = row[0] if row else None
     out["semantics"] = "keyed upsert on vendor_name: a re-ask updates the mapping in place"
     out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out
@@ -844,15 +845,11 @@ def add_vendor_alias(
     out = _run_write(tool, actor, args, _alias_dml(), dml_params, f"alias_key={key}")
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT alias_key, alias_name, canonical_vendor_name, notes, enabled, created_at\n"
-        f"FROM `{PROJECT}.{GOLD}.vendor_aliases`\n"
-        "WHERE alias_key = @alias_key\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("alias_key", "STRING", key)],
-        tool,
+    out["row"] = _latest_row(
+        tool, f"`{PROJECT}.{GOLD}.vendor_aliases`",
+        "alias_key, alias_name, canonical_vendor_name, notes, enabled, created_at",
+        "alias_key", key,
     )
-    out["row"] = row[0] if row else None
     out["semantics"] = (
         "keyed upsert on the normalized alias_key: a re-ask updates the one "
         "row; the variant inherits whatever decision the canonical name has"
@@ -872,6 +869,24 @@ def _validate_priority(priority: Any) -> int | None:
     return None
 
 
+def _rule_args_error(
+    rule_id: Any, priority: Any
+) -> tuple[int | None, tuple[str, str, str | None] | None]:
+    """Shared rule_id/priority gate for the two rule tools.
+
+    Returns (validated priority, refusal), where refusal is None or the
+    (code, error, row_key) triple to hand to _refuse."""
+    if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id or ""):
+        return None, ("invalid-rule-id",
+                      "rule_id must be a short slug (letters, digits, ._-)", None)
+    prio = _validate_priority(priority)
+    if prio is None:
+        return None, ("invalid-priority",
+                      "priority must be a non-negative integer",
+                      f"rule_id={rule_id}")
+    return prio, None
+
+
 def add_classification_rule(
     rule_id: str,
     priority: Any,
@@ -885,14 +900,10 @@ def add_classification_rule(
     args = {"rule_id": rule_id, "priority": priority, "category": category,
             "subcategory": subcategory, "description_regex": description_regex}
 
-    if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id or ""):
-        return _refuse(tool, actor, args, "invalid-rule-id",
-                       error="rule_id must be a short slug (letters, digits, ._-)")
-    prio = _validate_priority(priority)
-    if prio is None:
-        return _refuse(tool, actor, args, "invalid-priority",
-                       error="priority must be a non-negative integer",
-                       row_key=f"rule_id={rule_id}")
+    prio, refusal = _rule_args_error(rule_id, priority)
+    if refusal:
+        code, error, row_key = refusal
+        return _refuse(tool, actor, args, code, error=error, row_key=row_key)
     err = (field_error("description_regex", description_regex)
            or field_error("category", category)
            or field_error("subcategory", subcategory, required=False))
@@ -911,14 +922,11 @@ def add_classification_rule(
                      f"rule_id={rule_id}", pre_sql=_REGEX_GUARD)
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT rule_id, priority, description_regex, direction, category,\n"
-        "       subcategory, enabled, created_at\n"
-        f"FROM `{PROJECT}.{FINANCE}.classification_rules`\n"
-        "WHERE rule_id = @rule_id\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("rule_id", "STRING", rule_id)],
-        tool,
+    row = _latest_row(
+        tool, f"`{PROJECT}.{FINANCE}.classification_rules`",
+        "rule_id, priority, description_regex, direction, category,\n"
+        "       subcategory, enabled, created_at",
+        "rule_id", rule_id,
     )
     proof = _read(
         "SELECT transaction_key, category, subcategory, classification_source\n"
@@ -927,7 +935,7 @@ def add_classification_rule(
         [("rule_id", "STRING", rule_id)],
         tool,
     )
-    out["row"] = row[0] if row else None
+    out["row"] = row
     out["classification_proof"] = proof or []
     if not proof:
         out["note"] = (
@@ -939,6 +947,7 @@ def add_classification_rule(
         "append-only: rules are evaluated by ascending priority then rule_id; "
         "an override beats a rule"
     )
+    out["materialization"] = GOLD_MATERIALIZATION_NOTE
     return out
 
 
@@ -955,14 +964,10 @@ def add_vendor_rule(
     args = {"rule_id": rule_id, "priority": priority, "vendor_name": vendor_name,
             "description_regex": description_regex}
 
-    if not isinstance(rule_id, str) or not RULE_ID_RE.match(rule_id or ""):
-        return _refuse(tool, actor, args, "invalid-rule-id",
-                       error="rule_id must be a short slug (letters, digits, ._-)")
-    prio = _validate_priority(priority)
-    if prio is None:
-        return _refuse(tool, actor, args, "invalid-priority",
-                       error="priority must be a non-negative integer",
-                       row_key=f"rule_id={rule_id}")
+    prio, refusal = _rule_args_error(rule_id, priority)
+    if refusal:
+        code, error, row_key = refusal
+        return _refuse(tool, actor, args, code, error=error, row_key=row_key)
     err = (field_error("description_regex", description_regex)
            or field_error("vendor_name", vendor_name)
            or field_error("notes", notes, required=False))
@@ -981,16 +986,12 @@ def add_vendor_rule(
                      f"rule_id={rule_id}", pre_sql=_REGEX_GUARD)
     if out["status"] not in ("ok", "no-op"):
         return out
-    row = _read(
-        "SELECT rule_id, priority, description_regex, vendor_name, notes,\n"
-        "       enabled, created_at\n"
-        f"FROM `{PROJECT}.{GOLD}.vendor_rules`\n"
-        "WHERE rule_id = @rule_id\n"
-        "ORDER BY created_at DESC LIMIT 1",
-        [("rule_id", "STRING", rule_id)],
-        tool,
+    out["row"] = _latest_row(
+        tool, f"`{PROJECT}.{GOLD}.vendor_rules`",
+        "rule_id, priority, description_regex, vendor_name, notes,\n"
+        "       enabled, created_at",
+        "rule_id", rule_id,
     )
-    out["row"] = row[0] if row else None
     out["semantics"] = (
         "append-only: vendor rules are evaluated by ascending priority after "
         "aliases; an override beats both"

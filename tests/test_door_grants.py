@@ -44,6 +44,8 @@ from door.service import (  # noqa: E402
     _parse_grants,
 )
 
+from _door_fakes import FakeExecute, fake, pval, write_calls  # noqa: E402, F401
+
 ENROLLED = "steven@example.com"
 ET = ZoneInfo("America/New_York")
 KEY = "a" * 64
@@ -110,23 +112,7 @@ def machine(name: str) -> Identity:
     )
 
 
-# ── write-path fakes (same shape as tests/test_door_write.py) ────────────────
-
-
-class FakeExecute:
-    def __init__(self, script=()):
-        self.calls = []
-        self.script = list(script)
-
-    def __call__(self, sql, params, tool):
-        self.calls.append({"sql": sql, "params": list(params), "tool": tool})
-        return self.script.pop(0) if self.script else []
-
-
-def fake(monkeypatch, script=()):
-    fx = FakeExecute(script)
-    monkeypatch.setattr(fw, "_execute", fx)
-    return fx
+# ── write-path fakes: shared with tests/test_door_write.py (_door_fakes) ─────
 
 
 def boom(monkeypatch):
@@ -134,17 +120,6 @@ def boom(monkeypatch):
         raise AssertionError("a refused call must never reach BigQuery")
 
     monkeypatch.setattr(fw, "_execute", _boom)
-
-
-def pval(call, name):
-    for n, _t, v in call["params"]:
-        if n == name:
-            return v
-    raise KeyError(f"{name} not in {[n for n, _, _ in call['params']]}")
-
-
-def write_calls(fx):
-    return [c for c in fx.calls if "BEGIN TRANSACTION" in c["sql"]]
 
 
 def checkin_payload(**overrides):

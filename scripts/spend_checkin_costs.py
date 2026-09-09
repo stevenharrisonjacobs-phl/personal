@@ -32,10 +32,11 @@ import binascii
 import json
 import os
 import sys
-import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+
+from collector_common import _http_get_json, parse_iso
 
 USAGE = "usage: --start <utc-ts> --end <utc-ts>"
 
@@ -76,10 +77,6 @@ class UsageError(Exception):
 
 # ---- pure helpers -----------------------------------------------------------
 
-def parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-
 def prev_window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
     return start - timedelta(days=7), end - timedelta(days=7)
 
@@ -112,12 +109,6 @@ def decode_sa(sa_b64: str) -> dict:
     if not isinstance(info, dict):
         raise ValueError("decoded JSON is not an object")
     return info
-
-
-def _http_get_json(url, headers, timeout=60):
-    req = urllib.request.Request(url, headers=dict(headers))
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
 
 
 # ---- BigQuery scanning (snapfix-agents), both windows in one query ----------

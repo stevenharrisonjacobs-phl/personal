@@ -257,7 +257,7 @@ def add_classification_rule(
     RE2 (BigQuery REGEXP_CONTAINS) and is validated before anything lands.
     Returns the durable row plus up to three v_transactions_classified rows
     proving classification_source='rule:<rule_id>' (empty if nothing matches
-    yet).
+    yet); gold.transactions materializes within the hour.
     """
     return service.add_classification_rule(
         current_identity(), rule_id, priority, description_regex, category, subcategory

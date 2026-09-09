@@ -28,9 +28,10 @@ import json
 import os
 import sys
 import urllib.error
-import urllib.request
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
+
+from collector_common import _http_get_json, parse_iso
 
 MERCURY_API = "https://api.mercury.com/api/v1"
 DEFAULT_OUT = ".context/checkin"
@@ -41,22 +42,20 @@ MAX_PAGES = 50  # defensive cap; a window should never come close
 
 # ---- pure helpers -----------------------------------------------------------
 
-def parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-
 def iso_z(t: datetime) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def window_params(start_iso: str, end_iso: str) -> dict:
     """Posted-date (YYYY-MM-DD) params for the requested window and the
-    week-prior baseline window."""
+    week-prior baseline window, plus that baseline's exact timestamps
+    ("prev_ts") for the output JSON."""
     start, end = parse_iso(start_iso), parse_iso(end_iso)
     prev_start, prev_end = start - timedelta(days=7), end - timedelta(days=7)
     return {
         "window": (start.date().isoformat(), end.date().isoformat()),
         "prev": (prev_start.date().isoformat(), prev_end.date().isoformat()),
+        "prev_ts": (prev_start, prev_end),
     }
 
 
@@ -89,12 +88,6 @@ def parse_args(argv):
 
 
 # ---- fetch ------------------------------------------------------------------
-
-def _http_get_json(url, headers, timeout=60):
-    req = urllib.request.Request(url, headers=dict(headers))
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
 
 def fetch_transactions(http_get, headers, account_id, posted_start, posted_end):
     """One account, one window, paginated defensively (limit/offset; the API's
@@ -129,8 +122,7 @@ def run(argv, env, http_get):
         return 78
     headers = {} if proxied else {"Authorization": f"Bearer {token}"}
 
-    prev_start, prev_end = (parse_iso(start) - timedelta(days=7),
-                            parse_iso(end) - timedelta(days=7))
+    prev_start, prev_end = params["prev_ts"]
     # Fetch EVERYTHING before writing anything: a failure mid-pull must not
     # leave partial output files behind.
     try:
