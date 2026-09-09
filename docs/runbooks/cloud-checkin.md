@@ -16,10 +16,37 @@ rotation. Plan of record:
 | 6:30 | laptop fallback generator (burn-in only; unload at cutover) | laptop launchd | ambient gcloud |
 | ~7:05 | `spend-checkin-watchdog` routine, three branches: read succeeds + today's success row → quiet exit; read succeeds + no row → failed row; the door read itself ERRORS → write nothing and end loudly (indeterminate ≠ absence) | cloud | `checkin-watchdog` |
 
-Timezone invariant: both routines' `next_run_at` must correspond to the times
-above in **America/New_York**. Verify at creation and after every DST
-transition (routine cron is local-wall-clock per platform docs; the today-guard
-and window dial are ET-anchored regardless).
+### The two routines (created 2026-09-09)
+
+| Routine | id | cron (UTC) | env |
+|---|---|---|---|
+| `spend-checkin-morning` | `trig_01G69W81NTMSmNUTQNG3Q3Bq` | `0 10 * * *` | `env_01TwWGdTYMF4wf7pVPfQgoFP` (spend-checkin) |
+| `spend-checkin-watchdog` | `trig_01MJY6fq7xbk7RuPHr9hHt8m` | `5 11 * * *` | `env_01SurSnMgMyAK6HoEgJbxLFB` (spend-checkin-watchdog) |
+
+Manage at https://claude.ai/code/routines — the API cannot delete a routine.
+
+**Timezone invariant: routine cron is UTC, NOT local wall-clock.** So the ET
+firing time DRIFTS an hour at every DST transition. Verified at creation:
+`next_run_at` 10:05:31Z → 06:05 EDT and 11:05Z → 07:05 EDT.
+
+Replacement crons, so this is a lookup and not a calculation:
+
+| Period | morning | watchdog |
+|---|---|---|
+| EDT (Mar–Oct) | `0 10 * * *` | `5 11 * * *` |
+| **EST (Nov 1 2026 →)** | `0 11 * * *` | `5 12 * * *` |
+
+Re-verify `next_run_at` after each switch. The today-guard and the door's
+window dial are ET-anchored regardless, so a drifted routine fires at the wrong
+hour but never writes at the wrong classification.
+
+**Creating a routine auto-attaches EVERY claude.ai connector**, including
+`Personal_Door` — which authenticates as Steven's OAuth identity and would
+bypass the machine-token grants dial entirely (the path KTD12 explicitly
+rejected). Passing `mcp_connections: []` at create does NOT prevent this; it is
+silently ignored. After any create or update, re-assert with a second call
+carrying `clear_mcp_connections: true`, then confirm `mcp_connections` reads
+`[]`. Both routines reach the door only via committed `.mcp.json`.
 
 ## Credential manifest
 
