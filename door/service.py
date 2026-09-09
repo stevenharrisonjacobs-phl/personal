@@ -54,7 +54,13 @@ CLASSIFICATION_WRITE_TOOLS = frozenset(
         "add_vendor_rule",
     }
 )
-WRITE_TOOLS = CHECKIN_WRITE_TOOLS | CLASSIFICATION_WRITE_TOOLS
+# Work facts are OBSERVATIONS the routine records, like its own check-in row —
+# not classification decisions about how a dollar is categorized. They sit
+# beside the check-in tools and are deliberately NOT window-gated: the routine
+# fires at ~06:05 ET, before the 06:45 classification window opens, so gating
+# these would refuse them every single morning.
+WORK_WRITE_TOOLS = frozenset({"record_work_costs", "record_work_payments"})
+WRITE_TOOLS = CHECKIN_WRITE_TOOLS | CLASSIFICATION_WRITE_TOOLS | WORK_WRITE_TOOLS
 
 _EASTERN = ZoneInfo("America/New_York")
 _WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
@@ -575,6 +581,30 @@ class DoorService:
             category,
             subcategory,
             actor=self._write_actor(identity),
+        )
+
+    def record_work_costs(
+        self, identity: Identity, facts: list, run_ts: str | None = None
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity, "record_work_costs")
+        if refusal:
+            return self._refused_write(identity, "record_work_costs", refusal)
+        from . import finance_write
+
+        return finance_write.record_work_costs(
+            facts, run_ts, actor=self._write_actor(identity)
+        )
+
+    def record_work_payments(
+        self, identity: Identity, payments: list, run_ts: str | None = None
+    ) -> dict[str, Any]:
+        refusal = self._authorize(identity, "record_work_payments")
+        if refusal:
+            return self._refused_write(identity, "record_work_payments", refusal)
+        from . import finance_write
+
+        return finance_write.record_work_payments(
+            payments, run_ts, actor=self._write_actor(identity)
         )
 
     def add_vendor_rule(

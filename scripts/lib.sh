@@ -42,6 +42,7 @@ render_sql() {
     -e "s/__RAW_DATASET__/${RAW_DATASET}/g" \
     -e "s/__FINANCE_DATASET__/${FINANCE_DATASET}/g" \
     -e "s/__GOLD_DATASET__/${GOLD_DATASET}/g" \
+    -e "s/__WORK_DATASET__/${WORK_DATASET:-work}/g" \
     "$sql_file"
 }
 

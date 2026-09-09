@@ -27,6 +27,10 @@ from google.cloud import bigquery
 PROJECT = os.environ.get("GCP_PROJECT_ID", "steven-tiller-finance-2026")
 FINANCE = os.environ.get("FINANCE_DATASET", "finance")
 GOLD = os.environ.get("GOLD_DATASET", "gold")
+# Work / Plum Growth facts. Its own dataset so it can be granted
+# separately from the personal ones — in BigQuery the dataset is the
+# access-control unit.
+WORK = os.environ.get("WORK_DATASET", "work")
 
 # These datasets are small; 1 GiB is a generous ceiling that still stops a
 # runaway cross join from becoming a surprise bill.
@@ -50,6 +54,21 @@ def _bq() -> bigquery.Client:
 # over recomposing from finance.*. The finance.* views remain for balances, net
 # worth, manual (off-mirror) lines, and the projection assumptions.
 SOURCES: dict[str, dict[str, str]] = {
+    # ---- work: business (Plum Growth) facts ----
+    # Own dataset, so it can be granted to a bookkeeper without exposing a
+    # single personal transaction.
+    f"{WORK}.daily_costs": {
+        "grain": "day x provider x lens",
+        "summary": "What work CONSUMED: one row per calendar day, provider and lens. lens='billed' is what the provider charged (Vantage, lags ~1 day, restates); lens='estimated' is usage computed before anyone billed it. The two are kept for the same day and are NEVER summed — their difference is how you learn an estimate was wrong. Cash is not here; see work.payments.",
+    },
+    f"{WORK}.payments": {
+        "grain": "payment",
+        "summary": "What work actually PAID — cash out of the Plum Growth account, subscriptions included. One row per payment keyed on the source's own transaction id. OUTFLOWS ONLY: the IO AUTOPAY settlement pair and all inflows (cashback, payroll) are excluded, because counting the settlement beside the card charges double-counts every subscription. posted_date is settlement time; pending authorizations are absent by construction.",
+    },
+    f"{WORK}.v_consumed_vs_paid": {
+        "grain": "day x provider",
+        "summary": "Accrual versus cash per provider per day: consumed_usd (billed lens) beside paid_usd. Consumed a lot and paid nothing means the bill is coming; paid a lot and consumed little means an underused plan.",
+    },
     # ---- gold: the analysis models (prefer these) ----
     f"{GOLD}.transactions": {
         "grain": "transaction",

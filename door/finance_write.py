@@ -65,9 +65,12 @@ import checkin_validate  # noqa: E402
 PROJECT = finance_native.PROJECT
 FINANCE = finance_native.FINANCE
 GOLD = finance_native.GOLD
+WORK = finance_native.WORK
 
 AUDIT_TABLE = f"`{PROJECT}.{FINANCE}.door_audit_log`"
 CHECKIN_TABLE = f"`{PROJECT}.{FINANCE}.checkin_reports`"
+WORK_COSTS_TABLE = f"`{PROJECT}.{WORK}.daily_costs`"
+WORK_PAYMENTS_TABLE = f"`{PROJECT}.{WORK}.payments`"
 
 # Repo transaction keys are TO_HEX(SHA256(...)): exactly 64 lowercase hex.
 TXN_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -97,6 +100,33 @@ FLOW_TYPES = frozenset({
     "refund_reimbursement",
 })
 RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# ── work facts ───────────────────────────────────────────────────────────────
+# Provider keys are lowercase and match Vantage's spelling where they overlap
+# ('open_ai', never 'openai'), because work.daily_costs joins to work.payments
+# on this column and a second spelling silently splits a provider in two.
+PROVIDER_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Mercury transaction ids, and defensively anything id-shaped.
+PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+# Closed vocabularies. Shape validation is not enough for any of these: they
+# are read back by name downstream, so a typo becomes a row that matches no
+# filter and silently counts toward nothing — the flow_type lesson.
+COST_LENSES = frozenset({"billed", "estimated"})
+COST_SOURCES = frozenset({"vantage", "collector"})
+VENTURES = frozenset({"snapfix", "bobsled", "unmapped"})
+ACCOUNTS = frozenset({"checking", "credit"})
+# One morning writes a handful of rows; a backfill might write a season's
+# worth. The cap is a runaway guard, not a design limit.
+MAX_FACTS = 500
+# Providers seen so far. Deliberately NOT a closed enum — a new provider must
+# not need a code change — but an unrecognized one is SURFACED, because
+# 'openai' beside 'open_ai' is shape-valid and would silently split a provider
+# into two series that each look half-priced. Same failure as the flow_type
+# typo, and shape validation cannot catch either.
+KNOWN_PROVIDERS = frozenset({
+    "anthropic", "apify", "gcp", "langsmith", "open_ai",
+})
 
 REASON_CAP = 300
 FIELD_CAP = 300
@@ -894,6 +924,294 @@ def record_checkin_failed(reason: str, *, actor: WriteActor) -> dict:
             "the provided reason violated the content contract "
             f"({code}) and was replaced with an enumerated code; the row landed"
         )
+    return out
+
+
+# ── work facts: validation ───────────────────────────────────────────────────
+
+
+def _enum_error(field: str, value, allowed: frozenset) -> str | None:
+    if not isinstance(value, str) or value not in allowed:
+        return f"{field} must be one of: " + ", ".join(sorted(allowed))
+    return None
+
+
+def _money_error(field: str, value) -> str | None:
+    """Money is NUMERIC downstream, so reject anything that is not a finite
+    non-negative number. bool is checked explicitly because in Python
+    isinstance(True, int) is True and True would otherwise land as 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return f"{field} must be a number"
+    if value != value or value in (float("inf"), float("-inf")):
+        return f"{field} must be finite"
+    if value < 0:
+        return (f"{field} must be >= 0 — this table records outflows and "
+                "consumption as positive amounts; inflows do not belong here")
+    if value > 1_000_000:
+        return f"{field} is implausibly large ({value}); refusing rather than landing it"
+    return None
+
+
+def _batch_error(facts, kind: str) -> str | None:
+    if not isinstance(facts, list) or not facts:
+        return f"{kind} must be a non-empty list"
+    if len(facts) > MAX_FACTS:
+        return f"{kind} has {len(facts)} rows; the cap is {MAX_FACTS}"
+    if not all(isinstance(f, dict) for f in facts):
+        return f"every entry in {kind} must be an object"
+    return None
+
+
+def _dupe_error(keys: list[tuple], label: str) -> str | None:
+    """A MERGE whose source holds two rows for one target row fails with
+    BigQuery's opaque 'must match at most one source row' error. Catch it here
+    where we can say which key was duplicated."""
+    seen, dupes = set(), []
+    for k in keys:
+        if k in seen and k not in dupes:
+            dupes.append(k)
+        seen.add(k)
+    if dupes:
+        shown = ", ".join("/".join(str(p) for p in d) for d in dupes[:3])
+        return (f"duplicate {label} within one batch: {shown}"
+                + ("" if len(dupes) <= 3 else f" (+{len(dupes) - 3} more)")
+                + " — send one row per key")
+    return None
+
+
+def validate_cost_facts(facts) -> str | None:
+    err = _batch_error(facts, "facts")
+    if err:
+        return err
+    for i, f in enumerate(facts):
+        at = f"facts[{i}]"
+        if not isinstance(f.get("cost_date"), str) or not ISO_DATE_RE.match(f.get("cost_date", "")):
+            return f"{at}.cost_date must be YYYY-MM-DD"
+        if not isinstance(f.get("provider"), str) or not PROVIDER_RE.match(f.get("provider", "")):
+            return (f"{at}.provider must be a lowercase key like gcp, anthropic, "
+                    "open_ai, apify, langsmith")
+        for field, allowed in (("lens", COST_LENSES), ("source", COST_SOURCES)):
+            err = _enum_error(f"{at}.{field}", f.get(field), allowed)
+            if err:
+                return err
+        err = _money_error(f"{at}.cost_usd", f.get("cost_usd"))
+        if err:
+            return err
+    return _dupe_error(
+        [(f["cost_date"], f["provider"], f["lens"]) for f in facts],
+        "(cost_date, provider, lens)")
+
+
+def validate_payments(payments) -> str | None:
+    err = _batch_error(payments, "payments")
+    if err:
+        return err
+    for i, p in enumerate(payments):
+        at = f"payments[{i}]"
+        if not isinstance(p.get("payment_id"), str) or not PAYMENT_ID_RE.match(p.get("payment_id", "")):
+            return f"{at}.payment_id must be the provider's own transaction id"
+        if not isinstance(p.get("posted_date"), str) or not ISO_DATE_RE.match(p.get("posted_date", "")):
+            return (f"{at}.posted_date must be YYYY-MM-DD — the POSTED date. A pending "
+                    "authorization has none and does not belong in this table")
+        err = field_error(f"{at}.counterparty", p.get("counterparty"))
+        if err:
+            return err
+        err = _money_error(f"{at}.amount_usd", p.get("amount_usd"))
+        if err:
+            return err
+        for field, allowed in (("venture", VENTURES), ("account", ACCOUNTS)):
+            if p.get(field) is not None:
+                err = _enum_error(f"{at}.{field}", p.get(field), allowed)
+                if err:
+                    return err
+        prov = p.get("provider")
+        if prov is not None and (not isinstance(prov, str) or not PROVIDER_RE.match(prov)):
+            return (f"{at}.provider must be a lowercase key matching "
+                    "work.daily_costs.provider, or null when the counterparty "
+                    "bills no consumption provider")
+    return _dupe_error([(p["payment_id"],) for p in payments], "payment_id")
+
+
+# ── work facts: DML ──────────────────────────────────────────────────────────
+
+
+def _work_costs_dml() -> str:
+    """Keyed MERGE on (cost_date, provider, lens).
+
+    Upsert, not append, because BILLED FIGURES RESTATE: Vantage ingests late,
+    so yesterday's $2.51 legitimately becomes $2.83 tomorrow. An append would
+    leave both rows and every average would double-count the day.
+    """
+    return (
+        f"MERGE {WORK_COSTS_TABLE} AS t\n"
+        "USING (\n"
+        "  SELECT\n"
+        "    DATE(JSON_VALUE(f, '$.cost_date')) AS cost_date,\n"
+        "    JSON_VALUE(f, '$.provider') AS provider,\n"
+        "    JSON_VALUE(f, '$.lens') AS lens,\n"
+        "    CAST(JSON_VALUE(f, '$.cost_usd') AS NUMERIC) AS cost_usd,\n"
+        "    JSON_VALUE(f, '$.source') AS source\n"
+        "  FROM UNNEST(JSON_QUERY_ARRAY(PARSE_JSON(@facts))) AS f\n"
+        ") AS s\n"
+        "ON  t.cost_date = s.cost_date\n"
+        "AND t.provider  = s.provider\n"
+        "AND t.lens      = s.lens\n"
+        "WHEN MATCHED THEN UPDATE SET\n"
+        "  cost_usd    = s.cost_usd,\n"
+        "  source      = s.source,\n"
+        "  observed_at = CURRENT_TIMESTAMP(),\n"
+        "  run_ts      = @run_ts\n"
+        "WHEN NOT MATCHED THEN INSERT\n"
+        "  (cost_date, provider, lens, cost_usd, source, observed_at, run_ts)\n"
+        "  VALUES (s.cost_date, s.provider, s.lens, s.cost_usd, s.source,\n"
+        "          CURRENT_TIMESTAMP(), @run_ts)"
+    )
+
+
+def _work_payments_dml() -> str:
+    """Keyed MERGE on the provider's own payment_id.
+
+    That key is what makes a re-pull of an overlapping window idempotent BY
+    CONSTRUCTION — no window arithmetic to get wrong, and a manual re-fire
+    cannot double-count a subscription.
+    """
+    return (
+        f"MERGE {WORK_PAYMENTS_TABLE} AS t\n"
+        "USING (\n"
+        "  SELECT\n"
+        "    JSON_VALUE(p, '$.payment_id') AS payment_id,\n"
+        "    DATE(JSON_VALUE(p, '$.posted_date')) AS posted_date,\n"
+        "    JSON_VALUE(p, '$.counterparty') AS counterparty,\n"
+        "    JSON_VALUE(p, '$.provider') AS provider,\n"
+        "    JSON_VALUE(p, '$.venture') AS venture,\n"
+        "    CAST(JSON_VALUE(p, '$.amount_usd') AS NUMERIC) AS amount_usd,\n"
+        "    JSON_VALUE(p, '$.account') AS account\n"
+        "  FROM UNNEST(JSON_QUERY_ARRAY(PARSE_JSON(@payments))) AS p\n"
+        ") AS s\n"
+        "ON t.payment_id = s.payment_id\n"
+        "WHEN MATCHED THEN UPDATE SET\n"
+        "  posted_date  = s.posted_date,\n"
+        "  counterparty = s.counterparty,\n"
+        "  provider     = s.provider,\n"
+        "  venture      = s.venture,\n"
+        "  amount_usd   = s.amount_usd,\n"
+        "  account      = s.account,\n"
+        "  observed_at  = CURRENT_TIMESTAMP(),\n"
+        "  run_ts       = @run_ts\n"
+        "WHEN NOT MATCHED THEN INSERT\n"
+        "  (payment_id, posted_date, counterparty, provider, venture,\n"
+        "   amount_usd, account, observed_at, run_ts)\n"
+        "  VALUES (s.payment_id, s.posted_date, s.counterparty, s.provider,\n"
+        "          s.venture, s.amount_usd, s.account, CURRENT_TIMESTAMP(), @run_ts)"
+    )
+
+
+# ── tools: work facts ────────────────────────────────────────────────────────
+
+
+def _work_run_ts(run_ts) -> tuple[str | None, str | None]:
+    """run_ts ties a batch back to the check-in that observed it. Optional —
+    a backfill has no run — but a malformed one is refused rather than dropped,
+    because a silently-null provenance column is worse than an error."""
+    if run_ts is None:
+        return None, None
+    if not isinstance(run_ts, str) or not run_ts.strip():
+        return None, "run_ts must be an ISO-8601 timestamp string, or omitted"
+    try:
+        checkin_validate.parse_ts(run_ts)
+    except Exception:
+        return None, f"run_ts is not a valid ISO-8601 timestamp: {_scrub_text(run_ts[:60])}"
+    return run_ts, None
+
+
+def record_work_costs(facts, run_ts: str | None = None, *, actor: WriteActor) -> dict:
+    """Land work consumption facts — one row per (cost_date, provider, lens).
+
+    Upsert semantics: re-sending a day's figure REPLACES it, which is correct
+    because billed figures restate as Vantage ingestion catches up. Sending the
+    same key twice in ONE batch is refused — BigQuery's own error for that is
+    unreadable.
+    """
+    tool = "record_work_costs"
+    args = {"fact_count": len(facts) if isinstance(facts, list) else 0}
+
+    err = validate_cost_facts(facts)
+    if err:
+        return _refuse(tool, actor, args, "invalid-facts", error=err)
+    ts, err = _work_run_ts(run_ts)
+    if err:
+        return _refuse(tool, actor, args, "invalid-field", error=err)
+
+    dates = sorted({f["cost_date"] for f in facts})
+    row_key = f"cost_date={dates[0]}" + (f"..{dates[-1]}" if len(dates) > 1 else "")
+    args["providers"] = sorted({f["provider"] for f in facts})
+    args["lenses"] = sorted({f["lens"] for f in facts})
+
+    dml_params = [
+        ("facts", "STRING", json.dumps(facts, separators=(",", ":"), sort_keys=True)),
+        ("run_ts", "TIMESTAMP", ts),
+    ]
+    out = _run_write(tool, actor, args, _work_costs_dml(), dml_params, row_key)
+    if out["status"] not in ("ok", "no-op"):
+        return out
+    out["written"] = len(facts)
+    out["semantics"] = (
+        "upsert on (cost_date, provider, lens): re-sending a day replaces its "
+        "figure, because billed costs restate as ingestion catches up"
+    )
+    unknown = sorted({f["provider"] for f in facts} - KNOWN_PROVIDERS)
+    if unknown:
+        out["unknown_providers"] = unknown
+        out["note"] = (
+            "these provider keys have not been seen before. A genuinely new "
+            "provider is fine; a MISSPELLING of an existing one (openai for "
+            "open_ai) silently splits it into two half-priced series. Check "
+            "the spelling, then add it to KNOWN_PROVIDERS."
+        )
+    return out
+
+
+def record_work_payments(payments, run_ts: str | None = None, *, actor: WriteActor) -> dict:
+    """Land work payments — one row per payment, keyed on the provider's id.
+
+    Outflows only. The IO AUTOPAY settlement pair and every inflow (cashback,
+    payroll) are excluded UPSTREAM by the counting rules in
+    context/mercury-mapping.md; a negative amount here is refused rather than
+    silently signed, because a settlement row landing beside the card charges
+    double-counts every subscription.
+    """
+    tool = "record_work_payments"
+    args = {"payment_count": len(payments) if isinstance(payments, list) else 0}
+
+    err = validate_payments(payments)
+    if err:
+        return _refuse(tool, actor, args, "invalid-payments", error=err)
+    ts, err = _work_run_ts(run_ts)
+    if err:
+        return _refuse(tool, actor, args, "invalid-field", error=err)
+
+    dates = sorted({p["posted_date"] for p in payments})
+    row_key = f"posted_date={dates[0]}" + (f"..{dates[-1]}" if len(dates) > 1 else "")
+    args["ventures"] = sorted({p.get("venture") or "unset" for p in payments})
+
+    dml_params = [
+        ("payments", "STRING", json.dumps(payments, separators=(",", ":"), sort_keys=True)),
+        ("run_ts", "TIMESTAMP", ts),
+    ]
+    out = _run_write(tool, actor, args, _work_payments_dml(), dml_params, row_key)
+    if out["status"] not in ("ok", "no-op"):
+        return out
+    out["written"] = len(payments)
+    out["semantics"] = (
+        "upsert on payment_id: re-pulling an overlapping window is idempotent "
+        "by construction, so a manual re-fire cannot double-count a subscription"
+    )
+    unmapped = sorted({p["counterparty"] for p in payments
+                       if (p.get("venture") or "unmapped") == "unmapped"})
+    if unmapped:
+        out["unmapped_counterparties"] = unmapped
+        out["note"] = ("these counterparties have no venture mapping — say "
+                       "'map <name> to <venture>' to fix, never guessed")
     return out
 
 
