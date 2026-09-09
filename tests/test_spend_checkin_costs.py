@@ -62,12 +62,29 @@ class FakeRun:
         self.start_time = start_time
 
 
-class FakeLangsmithClient:
-    """list_runs keyed by project; unknown project raises (the rename case)."""
+class FakeProject:
+    def __init__(self, name):
+        self.name = name
 
-    def __init__(self, runs_by_project):
+
+class FakeLangsmithClient:
+    """list_runs keyed by project; unknown project raises (the rename case).
+
+    list_projects returns the keys unless `projects` overrides them — the
+    collector now DISCOVERS which projects to pull rather than being told.
+    """
+
+    def __init__(self, runs_by_project, projects=None, projects_error=None):
         self.runs_by_project = runs_by_project
+        self.projects = projects
+        self.projects_error = projects_error
         self.calls = []
+
+    def list_projects(self):
+        if self.projects_error is not None:
+            raise self.projects_error
+        names = self.projects if self.projects is not None else list(self.runs_by_project)
+        return [FakeProject(n) for n in names]
 
     def list_runs(self, *, project_name, start_time, end_time, is_root):
         self.calls.append({"project_name": project_name, "start_time": start_time,
@@ -94,24 +111,39 @@ def make_http_get(responses, calls=None):
     return http_get
 
 
+# The identifier field is actId — verified against the live API 2026-09-09.
+# This fixture previously said "actorId", which Apify never sends, so the
+# suite was green against a payload shape that does not exist and every real
+# run bucketed under "?".
 APIFY_ITEMS = [
-    {"actorId": "actorA", "startedAt": "2026-09-07T12:00:00Z", "usageTotalUsd": 2.0},
-    {"actorId": "actorA", "startedAt": "2026-09-07T13:00:00Z", "usageTotalUsd": 1.0},
-    {"actorId": "actorB", "startedAt": "2026-09-08T01:00:00Z", "usageTotalUsd": 0.25},
+    {"actId": "actorA", "startedAt": "2026-09-07T12:00:00Z", "usageTotalUsd": 2.0},
+    {"actId": "actorA", "startedAt": "2026-09-07T13:00:00Z", "usageTotalUsd": 1.0},
+    {"actId": "actorB", "startedAt": "2026-09-08T01:00:00Z", "usageTotalUsd": 0.25},
     # prev window (7 days earlier)
-    {"actorId": "actorA", "startedAt": "2026-08-31T12:00:00Z", "usageTotalUsd": 4.0},
+    {"actId": "actorA", "startedAt": "2026-08-31T12:00:00Z", "usageTotalUsd": 4.0},
     # outside both windows
-    {"actorId": "actorC", "startedAt": "2026-08-20T12:00:00Z", "usageTotalUsd": 9.0},
+    {"actId": "actorC", "startedAt": "2026-08-20T12:00:00Z", "usageTotalUsd": 9.0},
     # missing startedAt is skipped
-    {"actorId": "actorD", "usageTotalUsd": 5.0},
+    {"actId": "actorD", "usageTotalUsd": 5.0},
 ]
+
+# One real run object, keys exactly as the live API returns them.
+APIFY_REAL_RUN = {
+    "actId": "WI0tj4Ieb5Kq458gB", "buildId": "dmFH5YNy3JTDqZTTL",
+    "buildNumber": "0.0.92", "defaultDatasetId": "FNJzHCcqtxwlDKUGk",
+    "defaultKeyValueStoreId": "GWuHI1LENURWVTeph",
+    "defaultRequestQueueId": "oMh3fduXgtvWj9mNk",
+    "finishedAt": "2026-09-09T08:41:02.000Z", "id": "LqrckVAIdZwax3sIV",
+    "startedAt": "2026-09-09T08:37:43.834Z", "status": "SUCCEEDED",
+    "usageTotalUsd": 0.72405, "userId": "NzWtGGSPcqo0vM5w1",
+}
 
 LS_RUNS = {
     "Snapfix": [
         FakeRun("chain-a", 0.5, ts("2026-09-07T11:00:00Z")),
         FakeRun("chain-b", 0.25, ts("2026-08-31T11:00:00Z")),  # prev window
     ],
-    "Snapfix-Agents": [
+    "snapfix-agents": [
         FakeRun("agent-x", 1.5, ts("2026-09-07T15:00:00Z")),
         FakeRun("agent-naive", 0.125, datetime(2026, 9, 7, 16, 0, 0)),  # naive → UTC
         FakeRun(None, None, ts("2026-09-08T02:00:00Z")),  # no name, no cost
@@ -166,20 +198,67 @@ def test_langsmith_bucketing_windows_and_top():
     assert result["prev_cost"] == 0.25
     assert [t["name"] for t in result["top"]] == ["agent-x", "chain-a", "agent-naive"]
     assert result["notes"] == []
-    # both projects pulled over prev_start..end, root runs only
-    assert [c["project_name"] for c in client.calls] == ["Snapfix", "Snapfix-Agents"]
+    # both projects pulled over prev_start..end, root runs only — the order is
+    # the discovered (sorted) one, not a hardcoded tuple
+    assert [c["project_name"] for c in client.calls] == ["Snapfix", "snapfix-agents"]
     for c in client.calls:
         assert c["is_root"] is True
         assert c["start_time"] == ts("2026-08-31T10:00:00Z")
         assert c["end_time"] == ts(END)
 
 
-def test_langsmith_missing_project_is_note_not_error():
-    factory = lambda: FakeLangsmithClient({"Snapfix": LS_RUNS["Snapfix"]})  # noqa: E731
+def test_langsmith_listed_but_unreadable_project_is_note_not_error():
+    """Discovery lists it, list_runs refuses it — a note, never a dead pull."""
+    factory = lambda: FakeLangsmithClient(  # noqa: E731
+        {"Snapfix": LS_RUNS["Snapfix"]}, projects=["Snapfix", "snapfix-gone"])
     result = collect_with(base_env(), ls_factory=factory)
     assert result["errors"] == []
-    assert result["langsmith"]["notes"] == ["project Snapfix-Agents: LookupError"]
+    assert result["langsmith"]["notes"] == ["project snapfix-gone: LookupError"]
     assert result["langsmith"]["cost"] == 0.5
+
+
+def test_langsmith_pulls_every_production_snapfix_project():
+    """The real project list as of provisioning: nine snapfix* projects, two
+    of them dev. Production-only means seven, and the eight that the old
+    hardcoded ("Snapfix", "Snapfix-Agents") tuple missed are now covered."""
+    real = ["Snapfix", "snapfix-agents", "snapfix-analytics", "snapfix-dev",
+            "snapfix-outreach", "snapfix-outreach-dev", "snapfix-outreach-prod",
+            "snapfix-outreach-prod-github", "snapfix-research",
+            "default", "evaluators", "langsmith-polly", "writer-0.7-3315ed6b"]
+    client = FakeLangsmithClient({n: [] for n in real}, projects=real)
+    collect_with(base_env(), ls_factory=lambda: client)
+    pulled = [c["project_name"] for c in client.calls]
+    assert pulled == ["Snapfix", "snapfix-agents", "snapfix-analytics",
+                      "snapfix-outreach", "snapfix-outreach-prod",
+                      "snapfix-outreach-prod-github", "snapfix-research"]
+    assert "snapfix-dev" not in pulled and "snapfix-outreach-dev" not in pulled
+    assert not any(p in pulled for p in ("default", "evaluators",
+                                         "langsmith-polly", "writer-0.7-3315ed6b"))
+
+
+def test_langsmith_project_matching_is_case_insensitive():
+    """LangSmith LOOKUP is case-sensitive, so the collector must match the
+    spelling the API reports rather than a guessed one — the exact bug that
+    made 'Snapfix-Agents' silently match nothing."""
+    client = FakeLangsmithClient({}, projects=["SNAPFIX-Outreach-Prod", "Snapfix"])
+    collect_with(base_env(), ls_factory=lambda: client)
+    assert [c["project_name"] for c in client.calls] == ["SNAPFIX-Outreach-Prod",
+                                                         "Snapfix"]
+
+
+def test_langsmith_discovery_failure_degrades_to_a_note():
+    factory = lambda: FakeLangsmithClient(  # noqa: E731
+        LS_RUNS, projects_error=RuntimeError("403"))
+    result = collect_with(base_env(), ls_factory=factory)
+    assert result["errors"] == []
+    assert result["langsmith"]["cost"] == 0.0
+    assert result["langsmith"]["notes"] == ["project discovery failed: RuntimeError"]
+
+
+def test_langsmith_no_production_projects_says_so():
+    client = FakeLangsmithClient({}, projects=["default", "snapfix-dev"])
+    result = collect_with(base_env(), ls_factory=lambda: client)
+    assert result["langsmith"]["notes"] == ["no snapfix* production projects found"]
 
 
 def test_apify_bucketing_windows_and_top():
@@ -191,6 +270,54 @@ def test_apify_bucketing_windows_and_top():
 
 
 # -- collector: masked mode (proxy auth) --------------------------------------
+
+def test_apify_reads_the_field_the_api_actually_sends():
+    """A real run object carries actId and NO actorId. Pinning the real shape
+    here is what stops the fixture drifting back into fiction."""
+    assert "actId" in APIFY_REAL_RUN and "actorId" not in APIFY_REAL_RUN
+    out = scc.bucket_apify([APIFY_REAL_RUN],
+                           ts("2026-09-09T00:00:00Z"), ts("2026-09-10T00:00:00Z"))
+    assert out["cost"] == 0.724
+    assert out["top"] == [{"name": "WI0tj4Ieb5Kq458gB", "cost": 0.724}]
+    assert out["top"][0]["name"] != "?"
+
+
+def test_apify_resolves_actor_names_when_it_can():
+    """The id alone is unreadable in a morning report, so the top-3 actors are
+    resolved to names — one GET per DISTINCT actor, never per run."""
+    calls = []
+
+    def http_get(url, headers):
+        calls.append(url)
+        return {"data": {"name": "linkedin-company-posts"}}
+
+    out = scc.bucket_apify([APIFY_REAL_RUN], ts("2026-09-09T00:00:00Z"),
+                           ts("2026-09-10T00:00:00Z"), http_get=http_get, headers={})
+    assert out["top"] == [{"name": "linkedin-company-posts", "cost": 0.724}]
+    assert calls == ["https://api.apify.com/v2/acts/WI0tj4Ieb5Kq458gB"]
+
+
+def test_apify_name_lookup_failure_falls_back_to_the_id():
+    def boom(url, headers):
+        raise RuntimeError("scoped token cannot read actors")
+
+    out = scc.bucket_apify([APIFY_REAL_RUN], ts("2026-09-09T00:00:00Z"),
+                           ts("2026-09-10T00:00:00Z"), http_get=boom, headers={})
+    assert out["top"] == [{"name": "WI0tj4Ieb5Kq458gB", "cost": 0.724}]
+    assert out["cost"] == 0.724      # the pull itself still succeeds
+
+
+def test_apify_name_lookup_is_per_actor_not_per_run():
+    calls = []
+
+    def http_get(url, headers):
+        calls.append(url)
+        return {"data": {"name": "actor-" + url[-1]}}
+
+    scc.bucket_apify(APIFY_ITEMS, ts(START), ts(END), http_get=http_get, headers={})
+    assert len(calls) == 2           # actorA ran twice in-window, actorB once
+    assert len(set(calls)) == 2
+
 
 def test_apify_env_mode_sends_bearer_header():
     calls = []
