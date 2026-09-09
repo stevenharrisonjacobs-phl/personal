@@ -40,6 +40,28 @@ Re-verify `next_run_at` after each switch. The today-guard and the door's
 window dial are ET-anchored regardless, so a drifted routine fires at the wrong
 hour but never writes at the wrong classification.
 
+**`allowed_tools` must name the MCP tools explicitly, or the run STALLS.** A
+routine allowlisting only `Bash`/`Read`/`Glob`/`Grep` hits a permission prompt
+on its first `mcp__personal-door__*` call and parks at
+`worker_status: requires_action` forever — there is no one to answer it. It does
+not fail, it hangs, so the watchdog would write a failed row it cannot explain.
+Observed on the first manual fire, 2026-09-09. Current allowlists:
+
+* morning: `Bash Read Glob Grep` + `mcp__personal-door__{door_whoami,
+  run_finance_query, saved_query, list_saved_queries, feed_health,
+  record_checkin, record_checkin_failed}` + `mcp__vantage__{query-costs,
+  list-cost-providers, list-workspaces}`
+* watchdog: `Bash Read` + `mcp__personal-door__{door_whoami, saved_query,
+  list_saved_queries, record_checkin_failed}` — mirrors its door grant exactly,
+  so platform allowlist and server-side dial agree (KTD13 defense-in-depth).
+
+**A daytime manual fire can never produce a success row**, and that is correct:
+the R7 composition-abort rule stops any autonomous run still composing after
+06:40 ET and records a failed row instead. Verified 2026-09-09 — fail_reason
+"Session invoked 14:45 ET, past the 06:40 ET composition-abort deadline". To
+exercise composition outside the morning window, use an INTERACTIVE ad-hoc
+session, which `generate.md` exempts; the routine is not the tool for it.
+
 **Creating a routine auto-attaches EVERY claude.ai connector**, including
 `Personal_Door` — which authenticates as Steven's OAuth identity and would
 bypass the machine-token grants dial entirely (the path KTD12 explicitly
